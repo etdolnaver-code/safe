@@ -6,15 +6,6 @@ import {
   passwordSchema,
   youtubeId,
   registrationSchema,
-  draftSchema,
-  allSafetyRulesChecked,
-  educationPledgeSatisfied,
-  emptySafetyChecks,
-  educationProgress,
-  canProceedToPrivacy,
-  todayKST,
-  collectBasicFieldErrors,
-  formIssueMessage,
 } from '../lib/domain.ts';
 const basic = {
   startDate: '2026-10-15',
@@ -37,51 +28,6 @@ test('기본정보와 연락처/날짜 검증', () => {
   assert.equal(refinedBasic.safeParse({ ...basic, phone: 'abc' }).success, false);
   assert.equal(refinedBasic.safeParse({ ...basic, purpose: '기타' }).success, false);
 });
-test('누락·null·형식 오류는 입력란별 안내로 변환', () => {
-  const result = refinedBasic.safeParse({
-    ...basic,
-    company: '',
-    name: null,
-    phone: '010-1234',
-    educationDate: '',
-  });
-  assert.equal(result.success, false);
-  if (result.success) return;
-  const errors = collectBasicFieldErrors(result.error.issues, {
-    ...basic,
-    company: '',
-    name: null,
-    phone: '010-1234',
-    educationDate: '',
-  });
-  assert.equal(errors.company, '소속 회사명을 입력해 주세요.');
-  assert.equal(errors.name, '성명을 입력해 주세요.');
-  assert.equal(errors.phone, '010-0000-0000 형식으로 입력하세요.');
-  assert.equal(errors.educationDate, '교육 예정일을 입력하세요.');
-  const missingEducationDate = refinedBasic.safeParse({ ...basic, educationDate: '' });
-  assert.equal(missingEducationDate.success, false);
-  if (!missingEducationDate.success)
-    assert.equal(
-      collectBasicFieldErrors(missingEducationDate.error.issues).educationDate,
-      '교육 예정일을 입력하세요.',
-    );
-  const missingSignature = registrationSchema.safeParse({
-    basic,
-    pledge: true,
-    safetyChecks: Array(7).fill(true),
-    consent: true,
-    educationAttested: false,
-    educationPledged: true,
-    signature: null,
-    requestId: crypto.randomUUID(),
-  });
-  assert.equal(missingSignature.success, false);
-  if (!missingSignature.success)
-    assert.equal(
-      formIssueMessage(missingSignature.error.issues[0]),
-      '서명란에 직접 서명해 주세요.',
-    );
-});
 test('교육 이수일과 본인 확인 검증', () => {
   assert.equal(refinedBasic.safeParse({ ...basic, educationDate: '' }).success, false);
   assert.equal(refinedBasic.safeParse({ ...basic, educationCompleted: true }).success, false);
@@ -90,22 +36,8 @@ test('교육 이수일과 본인 확인 검증', () => {
       .success,
     false,
   );
-  assert.equal(
-    refinedBasic.safeParse({ ...basic, educationCertificateContact: '시험담당자' }).success,
-    false,
-  );
-  assert.ok(
-    refinedBasic.safeParse({
-      ...basic,
-      educationCompleted: true,
-      educationDate: '2026-01-01',
-      educationCertificateContact: '시험담당자',
-    }).success,
-  );
-});
-test('집계 기준일은 UTC 경계에서도 서울 날짜를 사용', () => {
-  assert.equal(todayKST(new Date('2026-10-26T14:59:00.000Z')), '2026-10-26');
-  assert.equal(todayKST(new Date('2026-10-26T15:00:00.000Z')), '2026-10-27');
+  assert.equal(refinedBasic.safeParse({ ...basic, educationCertificateContact: '시험담당자' }).success, false);
+  assert.ok(refinedBasic.safeParse({ ...basic, educationCompleted: true, educationDate: '2026-01-01', educationCertificateContact: '시험담당자' }).success);
 });
 test('빈 서명, 점만 찍기, 범위 밖 좌표 거부', () => {
   assert.equal(signatureSchema.safeParse([]).success, false);
@@ -140,10 +72,8 @@ test('동의 거부 또는 서약 미확인 등록 거부', () => {
   const payload = {
     basic,
     pledge: true,
-    safetyChecks: [true, true, true, true, true, true, true],
     consent: true,
     educationAttested: false,
-    educationPledged: true,
     signature: [
       [
         { x: 0.1, y: 0.2 },
@@ -155,73 +85,6 @@ test('동의 거부 또는 서약 미확인 등록 거부', () => {
   assert.ok(registrationSchema.safeParse(payload).success);
   assert.equal(registrationSchema.safeParse({ ...payload, consent: false }).success, false);
   assert.equal(registrationSchema.safeParse({ ...payload, pledge: false }).success, false);
-  assert.equal(
-    registrationSchema.safeParse({ ...payload, educationPledged: false }).success,
-    false,
-  );
-  assert.equal(
-    registrationSchema.safeParse({
-      ...payload,
-      safetyChecks: [true, true, true, true, true, true, false],
-    }).success,
-    false,
-  );
-  assert.ok(
-    registrationSchema.safeParse({
-      ...payload,
-      basic: {
-        ...basic,
-        educationCompleted: true,
-        educationDate: '2026-01-01',
-        educationCertificateContact: '시험담당자',
-      },
-      educationAttested: true,
-      educationPledged: false,
-    }).success,
-  );
-});
-test('미이수 작업자는 교육 이수 서약이 필요하고 기존 임시 저장은 미체크로 복원', () => {
-  assert.equal(educationPledgeSatisfied(false, false), false);
-  assert.equal(educationPledgeSatisfied(false, true), true);
-  assert.equal(educationPledgeSatisfied(true, false), true);
-  const oldDraft = draftSchema.parse({
-    basic,
-    step: 1,
-    pledge: false,
-    safetyChecks: emptySafetyChecks(),
-    attested: false,
-    consent: null,
-    requestId: crypto.randomUUID(),
-  });
-  assert.equal(oldDraft.educationPledged, false);
-});
-test('안전수칙 7개를 모두 확인해야 서약 완료', () => {
-  const checks = emptySafetyChecks();
-  assert.equal(allSafetyRulesChecked(checks), false);
-  assert.equal(allSafetyRulesChecked(checks.map((_, index) => index < 6)), false);
-  assert.equal(allSafetyRulesChecked(checks.map(() => true)), true);
-});
-test('영상 클릭과 7개 수칙 확인이 모두 끝나야 개인정보 동의 단계로 이동', () => {
-  const videos = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-  const allChecks = Array(7).fill(true) as boolean[];
-  assert.deepEqual(educationProgress(videos, []), {
-    completedCount: 0,
-    totalCount: 3,
-    allComplete: false,
-  });
-  assert.deepEqual(educationProgress(videos, ['a', 'b']), {
-    completedCount: 2,
-    totalCount: 3,
-    allComplete: false,
-  });
-  assert.equal(canProceedToPrivacy(videos, ['a', 'b'], allChecks), false);
-  assert.equal(
-    canProceedToPrivacy(videos, ['a', 'b', 'c'], [true, true, true, true, true, true, false]),
-    false,
-  );
-  assert.equal(canProceedToPrivacy(videos, ['a', 'b', 'c'], allChecks), true);
-  assert.equal(canProceedToPrivacy([...videos, { id: 'd' }], ['a', 'b', 'c'], allChecks), false);
-  assert.equal(canProceedToPrivacy(videos.slice(0, 2), ['a', 'b', 'c'], allChecks), true);
 });
 test('비밀번호 정책', () => {
   for (const p of ['1111', '11111111', '12345678', '87654321', '12121212', '12341234'])

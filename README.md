@@ -1,6 +1,6 @@
 # MBCo. 외부 작업자 출입등록 및 안전관리
 
-Next.js App Router · React · TypeScript · Tailwind CSS · Node.js 내장 SQLite.
+Next.js App Router · React · TypeScript · Tailwind CSS · 로컬 SQLite / 운영 Supabase PostgreSQL.
 접수 완료는 출입 또는 작업허가 승인이 아닙니다.
 
 ## 바로 실행
@@ -27,20 +27,18 @@ npm ci
 Copy-Item .env.example .env.local
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # 출력된 값을 .env.local의 DATA_ENCRYPTION_KEY에 입력
-npm run db:init
 npm run dev
 ```
 
 기존 .env.local이 있으면 덮어쓰지 마세요. DATA_ENCRYPTION_KEY 분실/변경 시 기존 정보를 복호화할 수 없습니다. 키는 DB와 별도의 비공개 위치에 백업하세요.
+`LOCAL_SQLITE_DEV=true`인 로컬 개발에서만 SQLite 파일을 생성하거나 사용합니다. Vercel에서는 `DATABASE_URL`이 필수이며 SQLite로 자동 대체하지 않습니다.
 
 ## 구현된 기능
 
 - 기본정보 → 안전교육/서약 → 개인정보 동의 → 전자서명 → 완료
 - 날짜, 연락처, 기타 사유, 교육일, 동의/서약, 서명을 서버에서 검증
 - Canvas 직접 서명/초기화, 관리자 전용 서명 조회
-- 등록된 모든 영상의 클릭, 미이수 작업자의 안전교육 1시간 이수 서약, 7개 안전수칙 개별 확인 후 개인정보 동의 단계로 이동. 영상별 클릭 체크박스·시청 완료 상태·전체 진행률 표시, 기록과 기본정보 임시 저장
-- 영상 클릭 / 재생 종료 확인 / 본인 이수 확인 / 관리자 근거 확인은 분리하며 클릭만으로 이수 완료 처리하지 않음. 관리자 영상 추가·삭제 시 현재 목록으로 조건 재계산
-- 작성 취소 또는 등록 후 새 작업자 시작 시 방문자 세션을 교체하여 영상 이수 기록을 분리
+- 등록된 모든 영상 페이지의 열람 기록을 확인한 후 방문자가 1시간 이수 서약에 직접 체크해야 개인정보 동의 단계로 이동. 페이지 열람·재생 종료 / 본인 이수 확인 / 관리자 근거 확인은 분리하며 자동 이수 판정 없음
 - 미이수 상태를 그대로 접수하며 작업 전 교육과 담당자 확인 필요 안내
 - 요청키·트랜잭션 기반 동시 중복 제출 방지, 접수번호만 공개 응답
 - scrypt 비밀번호 해시, 난수 세션, HttpOnly/SameSite 쿠키, DB 기반 요청 제한
@@ -83,9 +81,12 @@ npm audit
 | 변수                   | 설명                                                             |
 | ---------------------- | ---------------------------------------------------------------- |
 | APP_ORIGIN             | 변경 API에서 정확하게 허용할 Origin. 기본 http://localhost:3000  |
-| DATABASE_PATH          | 기본 ./data/mbco.sqlite. 운영은 영속 디스크 절대 경로 권장       |
+| DATABASE_URL           | Supabase Transaction Pooler PostgreSQL URI. Vercel 서버 전용 비밀값 |
+| DATABASE_PATH          | 로컬 개발·이전용 SQLite 파일 경로. Vercel에서 사용하지 않음 |
+| LOCAL_SQLITE_DEV       | 로컬 개발에서만 SQLite 사용을 명시적으로 허용 |
+| DB_MIGRATION_TARGET    | 이전 대상 확인값. DATABASE_URL의 `host[:port]/database`와 일치해야 함 |
 | DATA_ENCRYPTION_KEY    | 32바이트 hex. 클라이언트 노출 금지. 누락 시 DB 기능 실패         |
-| INITIAL_ADMIN_PASSWORD | 최초 DB 생성 시만 사용. 개발 1111. 운영에서 최초 변경 강제       |
+| INITIAL_ADMIN_PASSWORD | 새 DB에서만 최초 관리자 생성 시 사용. 운영은 강한 숫자 PIN 필요 |
 | COOKIE_SECURE          | HTTPS 운영은 true 필수, 로컬 HTTP는 false                        |
 | TRUST_PROXY            | 기본 false. 신뢰 프록시가 X-Forwarded-For를 덮어쓰는 경우만 true |
 
@@ -97,7 +98,7 @@ npm audit
 
 ## DB 구조
 
-스키마: lib/db.ts, PRAGMA user_version=3.
+운영 PostgreSQL 스키마: `scripts/schema.sql`. 로컬 SQLite 스키마: `lib/db.ts`.
 
 | 테이블        | 용도                                                        |
 | ------------- | ----------------------------------------------------------- |
@@ -106,12 +107,21 @@ npm audit
 | visitors      | 익명 토큰 해시, 2시간 만료                                  |
 | registrations | ID/접수번호/요청키/요청 HMAC/날짜/암호화된 현재 정보와 원본 |
 | videos        | 제목, YouTube ID, 노출 순서/상태, 소프트 삭제               |
-| video_clicks  | 방문자별 영상 클릭 확인 시각                                |
-| view_events   | 익명 영상 열람과 재생 종료 시각. 이수 판정 없음             |
+| view_events   | 익명 영상 페이지 열람·재생 시작·재생 종료 시각. 이수 판정 없음 |
 | rate_limits   | DB 요청 제한                                                |
 | audit         | 작업, 수행자, 대상, 시각, 암호화된 상세 사유                |
 
-SQLite WAL과 트랜잭션을 사용합니다. 작업일/집계는 한국 시간, 시각은 UTC 저장입니다. 회사명/성명 검색은 서버 메모리에서 복호화 후 필터링하므로 대규모 운영은 DB 검색 구조 확장이 필요합니다. 현재 단일 ADMIN 계정입니다. 관리자의 개인별 책임 추적은 개별 계정/SSO 확장이 필요합니다.
+운영은 PostgreSQL 트랜잭션과 요청키 고유 제약을 사용합니다. 작업일/집계는 한국 시간, 시각은 UTC 저장입니다. 회사명/성명 검색은 서버 메모리에서 복호화 후 필터링하므로 대규모 운영은 DB 검색 구조 확장이 필요합니다. 현재 단일 ADMIN 계정입니다. 관리자의 개인별 책임 추적은 개별 계정/SSO 확장이 필요합니다.
+
+## Supabase 이전과 Vercel 배포
+
+1. Supabase 프로젝트에서 PostgreSQL **Transaction Pooler** 연결 문자열을 준비합니다. 이 값은 서버의 `DATABASE_URL`에만 둡니다. 브라우저용 Supabase 키는 필요하지 않습니다.
+2. 로컬 SQLite를 운영 데이터로 옮길 때는 기존 `DATA_ENCRYPTION_KEY`를 유지하고 `npm run db:backup-sqlite`와 `npm run db:migrate-sqlite`로 백업·읽기 검사를 먼저 수행합니다. 백업은 `data/backups`에 보관하며 Git에 올리지 않습니다.
+3. `DB_MIGRATION_TARGET`에 연결 문자열의 정확한 `host[:port]/database`를 지정합니다. `npm run db:init -- --apply --schema-only`로 빈 앱 테이블을 생성한 다음 `npm run db:migrate-sqlite -- --apply`로 옮깁니다. 대상 테이블에 데이터가 있으면 스크립트가 중단되므로 중복 이전을 하지 않습니다. 이전 전후 테이블별 건수와 관리자 복호화 조회를 대조합니다.
+4. GitHub 저장소를 Vercel의 Next.js 프로젝트에 연결합니다. Production 환경에 `DATABASE_URL`, 기존 `DATA_ENCRYPTION_KEY`, `COOKIE_SECURE=true`를 서버 변수로 넣습니다. 최초 관리자 계정을 새로 만들 때만 강한 `INITIAL_ADMIN_PASSWORD`를 설정합니다. `APP_ORIGIN`은 Vercel에서 필요하지 않으며 실제 요청 도메인을 검증합니다.
+5. 새 Production 배포 후 비로그인 방문자 화면과 관리자 인증, 테스트 등록·조회·수정·재로그인·재배포 후 재조회를 확인합니다. 운영 등록 전 실제 영상과 개인정보 보유정책도 확인합니다.
+
+앱에는 파일 업로드 기능이 없으므로 Supabase Storage 버킷을 만들지 않습니다. 출입등록, 서명, 영상 기록, 관리자 설정, 세션, 초안, 감사로그는 모두 PostgreSQL 테이블에 저장합니다. 테이블은 공개 역할의 직접 접근을 철회하고 RLS를 활성화합니다. 앱의 서버 API가 관리자 인증과 권한을 검사합니다.
 
 ## 보유기간 정리
 
@@ -124,13 +134,13 @@ npm run data:purge
 npm run data:purge -- --apply
 ```
 
-실제 삭제 시 만료 세션/요청제한, 1일 지난 원시 영상 클릭·열람 이벤트, 366일 지난 감사로그도 정리합니다. 등록에 포함된 클릭·열람 스냅샷은 등록정보 보유기간을 따릅니다. 감사 사유에 개인정보를 불필요하게 입력하지 마세요. 작업 스케줄러/cron은 운영자가 설정해야 하며 자동 등록하지 않았습니다. VACUUM/WAL 체크포인트가 포함되므로 유지보수 시간에 실행하세요. 백업도 같은 정책에 따라 별도로 정리해야 합니다.
+실제 삭제 시 만료 세션/요청제한, 1일 지난 원시 영상열람 이벤트, 366일 지난 감사로그도 정리합니다. 등록에 포함된 열람 스냅샷은 등록정보 보유기간을 따릅니다. 감사 사유에 개인정보를 불필요하게 입력하지 마세요. 작업 스케줄러/cron은 운영자가 설정해야 하며 자동 등록하지 않았습니다. 백업도 같은 정책에 따라 별도로 정리해야 합니다.
 
 ## 운영 전 설정 및 범위
 
 1. 담당자가 실제 교육영상, 개인정보 목적/항목/보유기간, 안전서약문을 확정합니다.
-2. 고정 HTTPS 도메인, APP_ORIGIN, COOKIE_SECURE=true 및 신뢰 프록시를 설정합니다.
-3. 운영 전용 DB/암호키, OS 접근권한, 디스크 암호화, 백업·복구를 준비합니다.
+2. 고정 HTTPS 도메인, COOKIE_SECURE=true 및 신뢰 프록시를 설정합니다.
+3. Supabase DB/암호키, 접근권한, 백업·복구를 준비합니다.
 4. 초기 비밀번호를 변경합니다. 운영 모드에서는 변경 전 관리 기능이 차단됩니다.
 5. 자동 보유기간 정리, 백업 삭제, 장애 모니터링을 설정합니다.
 6. 영상 공개·임베드 가능 여부와 교육 적합성을 확인합니다. oEmbed 확인은 내용 적합성과 실제 시청 완료를 보증하지 않습니다.
@@ -142,13 +152,7 @@ npm run build
 npm start
 ```
 
-**영속 디스크가 있는 단일 Node 서버**용입니다. 파일 보존이 안 되는 서버리스/Edge 및 다중 인스턴스는 PostgreSQL 등으로 DB/세션/요청 제한을 이전해야 합니다. 자동 배포는 하지 않았습니다.
-
-### Vercel 배포 시 주의
-
-현재 `lib/db.ts`는 `DATABASE_PATH`의 로컬 SQLite 파일에 등록정보, 임시 저장, 세션, 영상 클릭, 요청 제한 및 감사로그를 저장합니다. [Vercel의 SQLite 안내](https://vercel.com/kb/guide/is-sqlite-supported-in-vercel)에 따르면 함수의 로컬 저장소는 영속적이지 않으며 인스턴스 간 공유되지 않습니다. `DATABASE_PATH`를 `/tmp`로 바꾸거나 환경변수만 추가해서는 안전하게 운영할 수 없습니다. Vercel에서 사용하려면 이 데이터 전체와 트랜잭션을 영속적인 외부 DB로 이전하고 마이그레이션과 백업을 확인해야 합니다.
-
-외부 DB 이전 후에도 배포 환경에는 `APP_ORIGIN`(접속하는 HTTPS 주소), `DATA_ENCRYPTION_KEY`(기존 데이터와 동일한 32바이트 hex 키), `INITIAL_ADMIN_PASSWORD`(최초 관리자 생성 시), `COOKIE_SECURE=true`를 설정해야 합니다. `TRUST_PROXY`는 신뢰하는 프록시가 클라이언트 IP 헤더를 덮어쓰는 경우에만 `true`로 설정합니다. 미리보기 URL은 운영 도메인과 Origin이 다르므로 별도로 검증해야 합니다. [Vercel 환경변수 문서](https://vercel.com/docs/environment-variables)에 따라 변수 변경 후 새 배포를 생성해야 적용됩니다.
+Vercel Node.js 서버리스에서는 PostgreSQL을 사용합니다. Edge 런타임과 정적 내보내기는 지원하지 않습니다.
 
 직접 서명은 동의문/시각/최초 정보와 함께 보존하며, 공인 전자서명 인증 서비스 연동은 포함하지 않습니다. 실제 교육 확인은 교육대장 등 근거를 확인해 관리자가 기록합니다.
 
@@ -157,4 +161,3 @@ npm start
 - [Next.js 공식 설치 안내](https://nextjs.org/docs/app/getting-started/installation)
 - [Node.js SQLite 공식 문서](https://nodejs.org/api/sqlite.html)
 - 기능 기준: PRD.md / 개발 지침: AGENTS.md
-# -

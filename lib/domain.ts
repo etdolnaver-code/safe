@@ -1,47 +1,24 @@
 import { z } from 'zod';
 export const purposes = ['공사·설치', '점검', '재작업', '기타'] as const;
 export const safetyRules = [
-  '작업장 출입 시 안전조끼·안전화 등 지정 보호구 착용',
-  '고소작업 시 안전대 착용 및 추락방지 조치',
-  '화기작업 시 작업허가 승인, 가연물 제거 및 소화기 비치',
-  '밀폐공간작업 시 산소·유해가스 측정, 환기 및 감시인 배치',
-  '설비 점검·정비 시 에너지원 차단 및 잠금·표지(LOTO) 조치',
-  '작업허가 승인 후 작업 실시 및 승인된 작업범위 준수',
-  '위험상황 발생 시 즉시 작업중지 및 MBCo. 담당자 보고',
+  '지정된 안전모·안전화 등 개인보호구를 올바르게 착용합니다.',
+  '고소작업 시 안전대와 추락방지 시설을 확인합니다.',
+  '화기작업 전 허가를 받고 소화기·화재감시 등 안전조치를 이행합니다.',
+  '밀폐공간 출입 전 산소·유해가스를 측정하고 감시인과 구조계획을 확보합니다.',
+  '설비의 모든 에너지원을 차단하고 잠금·표지(LOTO)를 시행합니다.',
+  '작업허가 승인 후 정해진 작업범위와 절차를 준수합니다.',
+  '위험상황에서는 즉시 작업을 중지하고 MBCo. 담당자에게 보고합니다.',
 ];
-export const POLICY_VERSION = '2026-10-v2';
-export const educationPledgeText = '안전교육 1시간을 이수할 것을 서약합니다.';
-export const emptySafetyChecks = () => safetyRules.map(() => false);
-export const allSafetyRulesChecked = (checks: boolean[]) =>
-  checks.length === safetyRules.length && checks.every(Boolean);
-export const educationPledgeSatisfied = (educationCompleted: boolean, educationPledged: boolean) =>
-  educationCompleted || educationPledged;
-export function educationProgress(videos: { id: string }[], completedVideoIds: string[]) {
-  const completed = new Set(completedVideoIds);
-  const completedCount = videos.filter((video) => completed.has(video.id)).length;
-  return {
-    completedCount,
-    totalCount: videos.length,
-    allComplete: completedCount === videos.length,
-  };
-}
-export const canProceedToPrivacy = (
-  videos: { id: string }[],
-  clickedVideoIds: string[],
-  checks: boolean[],
-) => {
-  const clicked = new Set(clickedVideoIds);
-  return videos.every((video) => clicked.has(video.id)) && allSafetyRulesChecked(checks);
-};
+export const POLICY_VERSION = '2026-10-v1';
 export const privacyText =
   '수집·이용 목적: 신원 확인, 출입관리, 안전교육 이력 및 작업이력 관리, 비상연락. 수집 항목: 회사명, 성명, 연락처, 작업기간, 방문 목적, 작업발주 담당자, 교육 이력, 안전서약 기록 및 전자서명. 보유기간: 작업 종료일로부터 1년(운영 전 확정 필요). 동의를 거부할 권리가 있으며, 동의하지 않으면 본 시스템에서 출입등록을 제출할 수 없습니다.';
-export const todayKST = (at = new Date()) =>
+export const todayKST = () =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Seoul',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
-  }).format(at);
+  }).format(new Date());
 const short = z.string().trim().min(1, '필수 항목입니다.').max(100, '100자 이내로 입력하세요.');
 const day = z
   .string()
@@ -73,9 +50,7 @@ export const refinedBasic = basicSchema.superRefine((v, c) => {
     c.addIssue({
       code: 'custom',
       path: ['educationDate'],
-      message: v.educationCompleted
-        ? '오늘까지의 교육일을 입력하세요.'
-        : '교육 예정일을 입력하세요.',
+      message: v.educationCompleted ? '오늘까지의 교육일을 입력하세요.' : '교육 예정일을 입력하세요.',
     });
   if (v.educationCompleted && !v.educationCertificateContact)
     c.addIssue({
@@ -84,11 +59,7 @@ export const refinedBasic = basicSchema.superRefine((v, c) => {
       message: '이수증 제출 담당자 성명을 입력하세요.',
     });
   if (!v.educationCompleted && v.educationCertificateContact)
-    c.addIssue({
-      code: 'custom',
-      path: ['educationCertificateContact'],
-      message: '미이수 상태에서는 이수증 제출 담당자를 입력할 수 없습니다.',
-    });
+    c.addIssue({ code: 'custom', path: ['educationCertificateContact'], message: '미이수 상태에서는 이수증 제출 담당자를 입력할 수 없습니다.' });
 });
 export const draftSchema = z.object({
   basic: basicSchema.extend({
@@ -96,18 +67,13 @@ export const draftSchema = z.object({
     endDate: z.union([day, z.literal('')]),
     company: z.string().max(100),
     name: z.string().max(100),
-    phone: z
-      .string()
-      .max(13)
-      .regex(/^[0-9-]*$/),
+    phone: z.string().max(13).regex(/^[0-9-]*$/),
     team: z.string().max(100),
     contact: z.string().max(100),
   }),
   step: z.number().int().min(0).max(3),
   pledge: z.boolean(),
-  safetyChecks: z.array(z.boolean()).length(safetyRules.length).default(emptySafetyChecks),
   attested: z.boolean(),
-  educationPledged: z.boolean().default(false),
   consent: z.boolean().nullable(),
   requestId: z.uuid(),
 });
@@ -119,7 +85,7 @@ export const signatureSchema = z
       .min(2)
       .max(2500),
   )
-  .min(1, '서명란에 직접 서명해 주세요.')
+  .min(1)
   .max(80)
   .refine((strokes) => {
     let length = 0;
@@ -132,20 +98,12 @@ export const registrationSchema = z
   .object({
     basic: refinedBasic,
     pledge: z.literal(true),
-    safetyChecks: z.array(z.literal(true)).length(safetyRules.length),
     consent: z.literal(true),
     educationAttested: z.boolean(),
-    educationPledged: z.boolean().default(false),
     signature: signatureSchema,
     requestId: z.uuid(),
   })
   .superRefine((v, c) => {
-    if (!educationPledgeSatisfied(v.basic.educationCompleted, v.educationPledged))
-      c.addIssue({
-        code: 'custom',
-        path: ['educationPledged'],
-        message: '안전교육 1시간 이수 서약에 체크해 주세요.',
-      });
     if (v.basic.educationCompleted && !v.educationAttested)
       c.addIssue({
         code: 'custom',
@@ -197,88 +155,6 @@ export function youtubeId(value: string) {
   }
 }
 export type Basic = z.infer<typeof basicSchema>;
-export type BasicFieldErrors = Partial<Record<keyof Basic, string>>;
-
-const basicFieldPrompts: Record<keyof Basic, string> = {
-  startDate: '작업 시작일을 선택해 주세요.',
-  endDate: '작업 종료일을 선택해 주세요.',
-  company: '소속 회사명을 입력해 주세요.',
-  name: '성명을 입력해 주세요.',
-  phone: '연락처를 입력해 주세요.',
-  team: '팀명을 입력해 주세요.',
-  contact: '담당자명을 입력해 주세요.',
-  purpose: '방문 목적을 선택해 주세요.',
-  otherPurpose: '기타 방문 목적을 입력해 주세요.',
-  educationCompleted: '안전교육 이수 여부를 선택해 주세요.',
-  educationDate: '교육일 또는 교육 예정일을 선택해 주세요.',
-  educationCertificateContact: '이수증 제출 담당자 성명을 입력해 주세요.',
-};
-
-export function basicFieldFromIssue(issue: z.ZodIssue): keyof Basic | null {
-  const key = issue.path[0] === 'basic' ? issue.path[1] : issue.path[0];
-  return typeof key === 'string' && Object.hasOwn(basicFieldPrompts, key)
-    ? (key as keyof Basic)
-    : null;
-}
-
-export function basicIssueMessage(issue: z.ZodIssue): string {
-  const field = basicFieldFromIssue(issue);
-  if (
-    field &&
-    (issue.message === '필수 항목입니다.' ||
-      issue.message === '날짜를 선택하세요.' ||
-      issue.code === 'invalid_type' ||
-      issue.code === 'invalid_union' ||
-      issue.code === 'invalid_value')
-  )
-    return basicFieldPrompts[field];
-  if (!field && (issue.code === 'invalid_type' || issue.code === 'invalid_union'))
-    return '입력값을 확인해 주세요.';
-  return issue.message;
-}
-
-export function formIssueMessage(issue: z.ZodIssue): string {
-  if (basicFieldFromIssue(issue)) return basicIssueMessage(issue);
-  if (issue.path[0] === 'basic') return '기본정보를 확인해 주세요.';
-  if (issue.path[0] === 'signature') return '서명란에 직접 서명해 주세요.';
-  if (issue.path[0] === 'consent') return '개인정보 수집·이용에 동의해 주세요.';
-  if (issue.path[0] === 'pledge' || issue.path[0] === 'safetyChecks')
-    return '안전수칙 7개 항목을 모두 확인해 주세요.';
-  if (issue.path[0] === 'requestId')
-    return '등록 세션이 만료되었습니다. 페이지를 새로고침해 주세요.';
-  if (issue.code === 'invalid_type' || issue.code === 'invalid_union')
-    return '입력값을 확인해 주세요.';
-  return issue.message;
-}
-
-export function collectBasicFieldErrors(
-  issues: z.ZodIssue[],
-  basic?: Partial<Record<keyof Basic, unknown>>,
-): BasicFieldErrors {
-  const errors: BasicFieldErrors = {};
-  for (const issue of issues) {
-    const field = basicFieldFromIssue(issue);
-    if (field && !errors[field]) errors[field] = basicIssueMessage(issue);
-  }
-  // Zod does not run cross-field refinements when a base field has the wrong type.
-  if (
-    basic?.purpose === '기타' &&
-    (typeof basic.otherPurpose !== 'string' || !basic.otherPurpose.trim())
-  )
-    errors.otherPurpose ??= '방문 목적을 입력하세요.';
-  if (basic && (typeof basic.educationDate !== 'string' || !basic.educationDate))
-    errors.educationDate ??=
-      basic.educationCompleted === true
-        ? '오늘까지의 교육일을 입력하세요.'
-        : '교육 예정일을 입력하세요.';
-  if (
-    basic?.educationCompleted === true &&
-    (typeof basic.educationCertificateContact !== 'string' ||
-      !basic.educationCertificateContact.trim())
-  )
-    errors.educationCertificateContact ??= '이수증 제출 담당자 성명을 입력하세요.';
-  return errors;
-}
 export type Signature = z.infer<typeof signatureSchema>;
 export type Video = {
   id: string;
@@ -299,10 +175,6 @@ export type Registration = {
   signature: Signature;
   consent: true;
   pledge: true;
-  safetyChecks?: boolean[];
-  clickedVideoIds?: string[];
-  educationPledged?: boolean;
-  educationPledgeText?: string;
   policyVersion: string;
   policyText: string;
   pledgeText: string[];

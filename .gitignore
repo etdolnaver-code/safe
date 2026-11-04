@@ -7,6 +7,6 @@ data/
 artifacts/
 tmp/
 .npm-cache/
-
-/*.png
-/44. 개선1/
+dev-server.*.log
+/.diagnostics-remote-*/
+/.deployment-safe/

@@ -6,30 +6,25 @@ export class HttpError extends Error {
   constructor(
     public status: number,
     message: string,
-    public diagnosticCode?: string,
   ) {
     super(message);
   }
 }
-export function fail(status: number, message: string, diagnosticCode?: string): never {
-  throw new HttpError(status, message, diagnosticCode);
+export function fail(status: number, message: string): never {
+  throw new HttpError(status, message);
 }
 export function origin(req: NextRequest) {
-  const allowed = process.env.APP_ORIGIN;
-  if (!allowed)
-    fail(503, '서버 주소 설정이 필요합니다. 관리자에게 문의해 주세요.', 'APP_ORIGIN_MISSING');
-  let expected: string;
-  try {
-    expected = new URL(allowed).origin;
-  } catch {
-    fail(503, '서버 주소 설정을 확인해야 합니다. 관리자에게 문의해 주세요.', 'APP_ORIGIN_INVALID');
-  }
-  if (req.headers.get('origin') !== expected)
-    fail(
-      403,
-      '현재 사이트 주소에서 요청을 처리할 수 없습니다. 관리자에게 문의해 주세요.',
-      'ORIGIN_MISMATCH',
-    );
+  // Same-domain requests need no separately configured public URL. An explicit
+  // origin remains available when a reverse proxy uses a different host.
+  const requestHost = req.headers.get('host');
+  if (!requestHost) fail(403, '허용되지 않은 요청입니다.');
+  const requestOrigin = req.nextUrl.protocol + '//' + requestHost;
+  const allowed = process.env.VERCEL === '1'
+    ? requestOrigin
+    : process.env.APP_ORIGIN
+    ? new URL(process.env.APP_ORIGIN).origin
+    : requestOrigin;
+  if (req.headers.get('origin') !== allowed) fail(403, '허용되지 않은 요청입니다.');
 }
 export async function body(req: NextRequest) {
   origin(req);
@@ -56,14 +51,14 @@ export async function body(req: NextRequest) {
     fail(400, '요청 형식이 올바르지 않습니다.');
   }
 }
-export function limit(key: string, max: number, windowMs: number) {
+export async function limit(key: string, max: number, windowMs: number) {
   const now = Date.now();
-  db()
+  await db()
     .prepare(
       'INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END, reset_at=CASE WHEN reset_at<=? THEN excluded.reset_at ELSE reset_at END',
     )
     .run(key, now + windowMs, now, now);
-  const row = db().prepare('SELECT count FROM rate_limits WHERE key=?').get(key) as {
+  const row = await db().prepare('SELECT count FROM rate_limits WHERE key=?').get(key) as {
     count: number;
   };
   if (row.count > max) fail(429, '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.');
@@ -75,7 +70,8 @@ export function clientKey(req: NextRequest) {
       : 'shared-local',
   );
 }
-export const secureCookie = () => process.env.COOKIE_SECURE === 'true';
+export const secureCookie = () =>
+  process.env.VERCEL === '1' || process.env.COOKIE_SECURE === 'true';
 export async function setCookie(name: string, value: string, maxAge: number) {
   (await cookies()).set(name, value, {
     httpOnly: true,
@@ -91,17 +87,14 @@ export async function visitor(create = false) {
   const token = raw && hash(raw);
   if (
     token &&
-    db()
+    await db()
       .prepare('SELECT token_hash FROM visitors WHERE token_hash=? AND expires_at>?')
       .get(token, Date.now())
   )
     return token;
   if (!create) fail(401, '등록 세션이 만료되었습니다. 페이지를 새로고침해 주세요.');
-  return rotateVisitor();
-}
-export async function rotateVisitor() {
   const next = randomBytes(32).toString('hex');
-  db()
+  await db()
     .prepare('INSERT INTO visitors VALUES(?,?)')
     .run(hash(next), Date.now() + 2 * 60 * 60 * 1000);
   await setCookie('mbco_visitor', next, 7200);
@@ -111,7 +104,7 @@ export async function admin(allowChange = false) {
   const raw = (await cookies()).get('mbco_admin')?.value;
   if (!raw) fail(401, '관리자 로그인이 필요합니다.');
   const token = hash(raw);
-  const row = db()
+  const row = await db()
     .prepare(
       'SELECT a.id,a.role,a.must_change,s.expires_at,s.last_seen FROM sessions s JOIN admins a ON a.id=s.admin_id WHERE s.token_hash=?',
     )
@@ -119,19 +112,19 @@ export async function admin(allowChange = false) {
     | { id: string; role: string; must_change: number; expires_at: number; last_seen: number }
     | undefined;
   if (!row || row.expires_at < Date.now() || row.last_seen < Date.now() - 30 * 60 * 1000) {
-    db().prepare('DELETE FROM sessions WHERE token_hash=?').run(token);
+    await db().prepare('DELETE FROM sessions WHERE token_hash=?').run(token);
     fail(401, '로그인이 만료되었습니다. 다시 로그인하세요.');
   }
   if (row.role !== 'ADMIN') fail(403, '권한이 없습니다.');
   if (row.must_change && process.env.NODE_ENV === 'production' && !allowChange)
     fail(428, '운영 환경에서는 먼저 초기 비밀번호를 변경해야 합니다.');
-  db().prepare('UPDATE sessions SET last_seen=? WHERE token_hash=?').run(Date.now(), token);
+  await db().prepare('UPDATE sessions SET last_seen=? WHERE token_hash=?').run(Date.now(), token);
   return row;
 }
 export async function createSession(id: string) {
   const value = randomBytes(32).toString('hex');
   const now = Date.now();
-  db()
+  await db()
     .prepare('INSERT INTO sessions VALUES(?,?,?,?,?)')
     .run(hash(value), id, now, now, now + 8 * 3600000);
   await setCookie('mbco_admin', value, 8 * 3600);
@@ -144,7 +137,7 @@ export function json(value: unknown, status = 200) {
 }
 export async function logout() {
   const raw = (await cookies()).get('mbco_admin')?.value;
-  if (raw) db().prepare('DELETE FROM sessions WHERE token_hash=?').run(hash(raw));
+  if (raw) await db().prepare('DELETE FROM sessions WHERE token_hash=?').run(hash(raw));
   await setCookie('mbco_admin', '', 0);
-  audit('admin', 'LOGOUT', null);
+  await audit('admin', 'LOGOUT', null);
 }

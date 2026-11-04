@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import type { ZodIssue } from 'zod';
 import {
   ArrowRight,
   ArrowLeft,
@@ -20,45 +19,27 @@ import {
 } from 'lucide-react';
 import {
   Basic,
-  BasicFieldErrors,
   Draft,
   Signature,
   Video,
   refinedBasic,
-  basicIssueMessage,
-  basicFieldFromIssue,
-  collectBasicFieldErrors,
-  formIssueMessage,
   registrationSchema,
   safetyRules,
-  emptySafetyChecks,
-  allSafetyRulesChecked,
-  educationProgress,
-  canProceedToPrivacy,
-  educationPledgeSatisfied,
-  educationPledgeText,
   privacyText,
 } from '@/lib/domain';
 import { api, send } from '@/lib/client';
 import { BasicFields, emptyBasic } from './basic-fields';
 import { SignaturePad } from './signature';
 const steps = ['기본정보', '안전교육/서약', '개인정보 동의', '전자서명', '완료'];
-type VideoProgress = {
-  videos: Video[];
-  clickedVideoIds: string[];
-  completedVideoIds: string[];
-};
 export function Visitor() {
   const [step, setStep] = useState(0),
     [basic, setBasic] = useState<Basic>(emptyBasic),
-    [basicErrors, setBasicErrors] = useState<BasicFieldErrors>({}),
     [videos, setVideos] = useState<Video[]>([]),
-    [clickedVideoIds, setClickedVideoIds] = useState<string[]>([]),
-    [completedVideoIds, setCompletedVideoIds] = useState<string[]>([]),
-    [safetyChecks, setSafetyChecks] = useState<boolean[]>(emptySafetyChecks),
+    [openedVideoIds, setOpenedVideoIds] = useState<string[]>([]),
+    [videoWatchConfirmed, setVideoWatchConfirmed] = useState(false),
     [today, setToday] = useState(''),
+    [pledge, setPledge] = useState(false),
     [attested, setAttested] = useState(false),
-    [educationPledged, setEducationPledged] = useState(false),
     [consent, setConsent] = useState<boolean | null>(null),
     [signature, setSignature] = useState<Signature>([]),
     [error, setError] = useState(''),
@@ -67,83 +48,40 @@ export function Visitor() {
     [ready, setReady] = useState(false);
   const request = useRef('');
   const submitting = useRef(false);
+  const advancing = useRef(false);
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
-  const pendingVideoClicks = useRef(new Set<string>());
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const pledge = allSafetyRulesChecked(safetyChecks);
-  function showBasicIssues(issues: ZodIssue[]) {
-    const errors = collectBasicFieldErrors(issues, basic);
-    setBasicErrors(errors);
-    const firstBasicIssue = issues.find((issue) => basicFieldFromIssue(issue)) ?? issues[0];
-    setError(firstBasicIssue ? basicIssueMessage(firstBasicIssue) : '기본정보를 확인해 주세요.');
-    const firstField = Object.keys(errors)[0];
-    if (firstField)
-      window.requestAnimationFrame(() => {
-        document.querySelector<HTMLInputElement>(`[name="${firstField}"]`)?.focus();
-      });
-  }
-  function clearBasicError(field: keyof Basic) {
-    setError('');
-    setBasicErrors((current) => {
-      if (!current[field]) return current;
-      const next = { ...current };
-      delete next[field];
-      return next;
-    });
-  }
   const currentDraft = (nextStep = step): Draft => ({
-    basic,
-    step: nextStep,
-    pledge,
-    safetyChecks,
-    attested,
-    educationPledged,
-    consent,
-    requestId: request.current,
+    basic, step: nextStep, pledge, attested, consent, requestId: request.current,
   });
   function saveDraft(draft: Draft) {
-    saveQueue.current = saveQueue.current
-      .catch(() => {})
-      .then(async () => {
-        await api('draft', send(draft, 'PUT'));
-      });
+    saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
+      await api('draft', send(draft, 'PUT'));
+    });
     return saveQueue.current;
   }
   async function refreshVideoProgress() {
-    const progress = await api<VideoProgress>('video-progress');
+    const progress = await api<{ videos: Video[]; openedVideoIds: string[] }>('video-progress');
     setVideos(progress.videos);
-    setClickedVideoIds([...new Set([...progress.clickedVideoIds, ...pendingVideoClicks.current])]);
-    setCompletedVideoIds(progress.completedVideoIds);
+    setOpenedVideoIds(progress.openedVideoIds);
     return progress;
-  }
-  async function recordVideoClick(videoId: string) {
-    if (pendingVideoClicks.current.has(videoId)) return;
-    pendingVideoClicks.current.add(videoId);
-    setClickedVideoIds((current) => [...new Set([...current, videoId])]);
-    try {
-      await api('video-clicks', send({ videoId }));
-    } catch {
-      setError('영상 클릭 기록을 저장하지 못했습니다. 다시 클릭해 주세요.');
-    } finally {
-      pendingVideoClicks.current.delete(videoId);
-      void refreshVideoProgress().catch(() =>
-        setError('영상 클릭 기록을 불러오지 못했습니다. 다시 시도해 주세요.'),
-      );
-    }
   }
   useEffect(() => {
     api<{ videos: Video[]; today: string; requestId: string }>('bootstrap')
       .then(async (d) => {
         request.current = d.requestId;
         setToday(d.today);
+        let { draft, hasSubmitted } = await api<{ draft: Draft | null; hasSubmitted: boolean }>('draft');
+        if (hasSubmitted) {
+          await api('visitor/reset', send({ preserveDraft: !!draft }));
+          if (draft) ({ draft } = await api<{ draft: Draft | null }>('draft'));
+        }
         await refreshVideoProgress();
-        const { draft } = await api<{ draft: Draft | null }>('draft');
         if (draft) {
           setBasic(draft.basic);
           setStep(draft.step);
-          setSafetyChecks(draft.safetyChecks);
+          setPledge(draft.pledge);
           setAttested(draft.attested);
-          setEducationPledged(draft.educationPledged);
           setConsent(draft.consent);
           request.current = draft.requestId;
         }
@@ -153,60 +91,47 @@ export function Visitor() {
   }, []);
   useEffect(() => {
     if (!ready || step !== 1) return;
-    const refresh = () => {
-      void refreshVideoProgress().catch(() =>
-        setError('영상 시청 기록을 불러오지 못했습니다. 다시 시도해 주세요.'),
-      );
-    };
-    const refreshWhenVisible = () => {
-      if (document.visibilityState === 'visible') refresh();
-    };
-    const channel =
-      typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('mbco-video-progress');
-    if (channel) channel.onmessage = refresh;
-    const poll = window.setInterval(refreshWhenVisible, 3000);
+    const refresh = () => { void refreshVideoProgress().catch(() => setError('영상 시청 기록을 불러오지 못했습니다. 다시 시도해 주세요.')); };
     window.addEventListener('focus', refresh);
-    document.addEventListener('visibilitychange', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refresh);
     return () => {
       window.removeEventListener('focus', refresh);
-      document.removeEventListener('visibilitychange', refreshWhenVisible);
-      window.clearInterval(poll);
-      channel?.close();
+      document.removeEventListener('visibilitychange', refresh);
     };
   }, [ready, step]);
   useEffect(() => {
     if (!ready || step === 4) return;
     const timer = window.setTimeout(() => {
-      void saveDraft(currentDraft()).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : '임시 저장에 실패했습니다. 다시 시도해 주세요.');
+      void saveDraft(currentDraft()).catch(() => {
+        setError('임시 저장에 실패했습니다. 다시 시도해 주세요.');
       });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [ready, step, basic, safetyChecks, attested, educationPledged, consent]);
+  }, [ready, step, basic, pledge, attested, consent]);
   async function next() {
+    if (advancing.current || submitting.current) return;
     setError('');
     if (step === 0) {
       const result = refinedBasic.safeParse(basic);
       if (!result.success) {
-        showBasicIssues(result.error.issues);
+        setError(result.error.issues[0].message);
         return;
       }
-      setBasicErrors({});
       if (!basic.educationCompleted) setAttested(false);
     }
-    if (step === 1 && !pledge) {
-      setError('안전수칙 7개 항목을 모두 확인해 주세요.');
-      return;
-    }
-    if (step === 1 && !educationPledgeSatisfied(basic.educationCompleted, educationPledged)) {
-      setError('안전교육 1시간 이수 서약에 체크해 주세요.');
+    if (step === 1 && (!pledge || (basic.educationCompleted && !attested))) {
+      setError(!pledge ? '안전서약에 동의해 주세요.' : '교육 이수 사실을 직접 확인해 주세요.');
       return;
     }
     if (step === 1) {
       try {
         const progress = await refreshVideoProgress();
-        if (progress.videos.some((video) => !progress.clickedVideoIds.includes(video.id))) {
-          setError('안전교육 영상을 모두 클릭해 주세요.');
+        if (progress.videos.some((video) => !progress.openedVideoIds.includes(video.id))) {
+          setError('모든 안전교육 영상 페이지를 열어본 후 다음 단계로 이동할 수 있습니다.');
+          return;
+        }
+        if (progress.videos.length > 0 && !videoWatchConfirmed) {
+          setError('안전교육 1시간 이수 서약에 체크해 주세요.');
           return;
         }
       } catch {
@@ -218,11 +143,16 @@ export function Visitor() {
       setError('개인정보 수집·이용에 동의해야 등록을 제출할 수 있습니다.');
       return;
     }
+    advancing.current = true;
+    setBusy(true);
     try {
       await saveDraft(currentDraft(step + 1));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '임시 저장에 실패했습니다. 다시 시도해 주세요.');
+    } catch {
+      setError('임시 저장에 실패했습니다. 다시 시도해 주세요.');
       return;
+    } finally {
+      advancing.current = false;
+      setBusy(false);
     }
     setStep((s) => s + 1);
     window.scrollTo({ top: 120, behavior: 'smooth' });
@@ -234,19 +164,14 @@ export function Visitor() {
     const payload = {
       basic,
       pledge,
-      safetyChecks,
       consent,
       educationAttested: attested,
-      educationPledged,
       signature,
       requestId: request.current,
     };
     const valid = registrationSchema.safeParse(payload);
     if (!valid.success) {
-      if (valid.error.issues.some((issue) => issue.path[0] === 'basic')) {
-        setStep(0);
-        showBasicIssues(valid.error.issues);
-      } else setError(formIssueMessage(valid.error.issues[0]));
+      setError(valid.error.issues[0].message);
       return;
     }
     submitting.current = true;
@@ -257,14 +182,11 @@ export function Visitor() {
       setReceipt(d.receipt);
       setStep(4);
       setBasic(emptyBasic);
-      setBasicErrors({});
-      setSafetyChecks(emptySafetyChecks());
       setSignature([]);
       setAttested(false);
-      setEducationPledged(false);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : '등록에 실패했습니다. 다시 시도해 주세요.');
+      setError((e as Error).message);
     } finally {
       setBusy(false);
       submitting.current = false;
@@ -275,21 +197,27 @@ export function Visitor() {
     setBusy(true);
     try {
       await saveQueue.current.catch(() => {});
-      await api('draft', send({}, 'DELETE'));
+      await api('visitor/reset', send({}));
       window.location.reload();
     } catch {
       setError('작성 취소에 실패했습니다. 다시 시도해 주세요.');
       setBusy(false);
     }
   }
+  async function newRegistration() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api('visitor/reset', send({}));
+      window.location.reload();
+    } catch {
+      setError('새 등록을 시작하지 못했습니다. 다시 시도해 주세요.');
+      setBusy(false);
+    }
+  }
   const icon = [UserRound, ShieldCheck, LockKeyhole, PenLine, CheckCircle2][step];
   const Icon = icon;
-  const { completedCount: completedVideoCount } = educationProgress(videos, completedVideoIds);
-  const clickedVideoCount = videos.filter((video) => clickedVideoIds.includes(video.id)).length;
-  const allVideosClicked = clickedVideoCount === videos.length;
-  const educationReady =
-    canProceedToPrivacy(videos, clickedVideoIds, safetyChecks) &&
-    educationPledgeSatisfied(basic.educationCompleted, educationPledged);
+  const allVideosOpened = videos.every((video) => openedVideoIds.includes(video.id));
   return (
     <main className="visitor-shell">
       <section className="intro">
@@ -348,12 +276,7 @@ export function Visitor() {
                 <p className="section-description">
                   원활한 출입과 안전관리를 위해 아래 정보를 정확하게 입력해 주세요.
                 </p>
-                <BasicFields
-                  value={basic}
-                  onChange={setBasic}
-                  onFieldChange={clearBasicError}
-                  errors={basicErrors}
-                />
+                <BasicFields value={basic} onChange={setBasic} />
               </>
             )}
             {step === 1 && (
@@ -368,32 +291,6 @@ export function Visitor() {
                 <h3 className="subheading">
                   안전교육 영상 <span className="count-badge">{videos.length}</span>
                 </h3>
-                <div className="training-progress" role="status" aria-live="polite">
-                  <strong>전체 교육 진행률</strong>
-                  <span>
-                    {completedVideoCount}/{videos.length}개 영상 이수 완료
-                  </span>
-                  <div
-                    className="training-progress-track"
-                    role="progressbar"
-                    aria-label="안전교육 영상 이수 진행률"
-                    aria-valuemin={0}
-                    aria-valuemax={videos.length}
-                    aria-valuenow={completedVideoCount}
-                  >
-                    <span
-                      style={{
-                        width: videos.length
-                          ? `${(completedVideoCount / videos.length) * 100}%`
-                          : '0%',
-                      }}
-                    />
-                  </div>
-                  <small>
-                    영상 클릭 {clickedVideoCount}/{videos.length}개 · 다음 단계는 영상 전체 클릭과
-                    안전수칙 확인 후 이동할 수 있습니다.
-                  </small>
-                </div>
                 {videos.length === 0 ? (
                   <div className="empty-state compact">
                     <Play size={25} />
@@ -401,51 +298,45 @@ export function Visitor() {
                     <small>현장 담당자에게 교육 진행 방법을 확인해 주세요.</small>
                   </div>
                 ) : (
-                  videos.map((v, i) => {
-                    const clicked = clickedVideoIds.includes(v.id);
-                    const completed = completedVideoIds.includes(v.id);
-                    return (
-                      <div key={v.id} className={'video-row' + (completed ? ' completed' : '')}>
-                        <span
-                          className={'video-click-checkbox' + (clicked ? ' checked' : '')}
-                          role="checkbox"
-                          aria-checked={clicked}
-                          aria-readonly="true"
-                          aria-label={`${v.title} 클릭 여부`}
-                        >
-                          {clicked && <Check size={15} strokeWidth={3} />}
+                  videos.map((v, i) => (
+                    <Link
+                      key={v.id}
+                      className="video-row"
+                      href={'/education/' + v.id}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <span className="video-icon">
+                        <Play size={20} />
+                      </span>
+                      <div>
+                        <small>SAFETY TRAINING {String(i + 1).padStart(2, '0')}</small>
+                        <strong>{v.title}</strong>
+                        <span className={'video-status ' + (openedVideoIds.includes(v.id) ? 'opened' : 'unopened')}>
+                          {openedVideoIds.includes(v.id) ? '열어봄 ✓' : '미확인'}
                         </span>
-                        <Link
-                          className="video-link"
-                          href={'/education/' + v.id}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          aria-label={`${v.title}, ${clicked ? '클릭 확인' : '미클릭'}, ${completed ? '이수 완료' : '미이수'}`}
-                          onClick={() => void recordVideoClick(v.id)}
-                          onAuxClick={(event) => {
-                            if (event.button === 1) void recordVideoClick(v.id);
-                          }}
-                        >
-                          <span className="video-icon">
-                            {completed ? <CheckCircle2 size={23} /> : <Play size={20} />}
-                          </span>
-                          <div>
-                            <small>SAFETY TRAINING {String(i + 1).padStart(2, '0')}</small>
-                            <strong>{v.title}</strong>
-                            <span className="video-status">
-                              {completed ? '이수 완료' : '미이수'}
-                            </span>
-                          </div>
-                          <ExternalLink size={17} />
-                        </Link>
                       </div>
-                    );
-                  })
+                      <ExternalLink size={17} />
+                    </Link>
+                  ))
                 )}
-                {!allVideosClicked && (
+                {!allVideosOpened && (
                   <p className="notice warning" role="status">
-                    <Info size={18} /> 안전교육 영상을 모두 클릭해 주세요.
+                    <Info size={18} /> 모든 안전교육 영상 페이지를 열어본 후 이수 서약에 체크할 수 있습니다.
                   </p>
+                )}
+                {videos.length > 0 && (
+                  <label className="check-panel video-watch-check">
+                    <input
+                      type="checkbox"
+                      checked={videoWatchConfirmed && allVideosOpened}
+                      disabled={!allVideosOpened}
+                      onChange={(e) => setVideoWatchConfirmed(e.target.checked)}
+                    />
+                    <span>
+                      <strong>안전교육 1시간을 이수한 것을 서약합니다.</strong>
+                    </span>
+                  </label>
                 )}
                 {basic.educationCompleted ? (
                   <label className="check-panel">
@@ -461,67 +352,27 @@ export function Visitor() {
                       <small>본인 확인으로 기록되며 관리자 확인과는 구분됩니다.</small>
                     </span>
                   </label>
-                ) : (
-                  <>
-                    <label
-                      className={
-                        'check-panel education-pledge' + (educationPledged ? ' selected' : '')
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        required
-                        checked={educationPledged}
-                        onChange={(event) => setEducationPledged(event.target.checked)}
-                      />
-                      <strong>{educationPledgeText}</strong>
-                    </label>
-                    {!educationPledged && (
-                      <p className="notice warning" role="status">
-                        <Info size={18} /> 안전교육 1시간 이수 서약에 체크해 주세요.
-                      </p>
-                    )}
-                  </>
-                )}
+                ) : null}
                 <h3 className="subheading">작업 전 반드시 지켜야 할 7가지 안전수칙</h3>
                 <ol className="safety-list">
                   {safetyRules.map((r, i) => (
                     <li key={r}>
-                      <label
-                        className={'safety-rule-option' + (safetyChecks[i] ? ' selected' : '')}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={safetyChecks[i]}
-                          onChange={(event) =>
-                            setSafetyChecks((current) =>
-                              current.map((checked, index) =>
-                                index === i ? event.target.checked : checked,
-                              ),
-                            )
-                          }
-                        />
-                        <span className="safety-rule-number">{String(i + 1).padStart(2, '0')}</span>
-                        <span>{r}</span>
-                      </label>
+                      <span>{String(i + 1).padStart(2, '0')}</span>
+                      {r}
                     </li>
                   ))}
                 </ol>
-                {!pledge && (
-                  <p className="notice warning" role="status">
-                    <Info size={18} /> 안전수칙 7개 항목을 모두 확인해 주세요.
-                  </p>
-                )}
-                <div className={'check-panel' + (pledge ? ' highlighted' : '')} role="status">
-                  <CheckCircle2
-                    size={20}
-                    className={pledge ? 'safety-check-complete' : 'safety-check-pending'}
+                <label className="check-panel highlighted">
+                  <input
+                    type="checkbox"
+                    checked={pledge}
+                    onChange={(e) => setPledge(e.target.checked)}
                   />
                   <span>
-                    <strong>안전수칙을 숙지하였으며 성실히 준수할 것을 서약합니다.</strong>
-                    <small>7개 항목을 모두 체크하면 서약이 완료됩니다.</small>
+                    <strong>[필수] 안전수칙을 숙지하였으며 성실히 준수할 것을 서약합니다.</strong>
+                    <small>위험상황을 발견하면 작업을 중지하고 담당자에게 보고하겠습니다.</small>
                   </span>
-                </div>
+                </label>
               </>
             )}
             {step === 2 && (
@@ -542,8 +393,6 @@ export function Visitor() {
                     <dt>보유기간</dt>
                     <dd>
                       <strong>작업 종료일로부터 1년</strong>
-                      <br />
-                      <span className="policy-note">보유기간은 운영 전 확정이 필요합니다.</span>
                     </dd>
                     <dt>동의 거부 권리</dt>
                     <dd>
@@ -607,7 +456,7 @@ export function Visitor() {
                   </dd>
                   <dt>안전교육</dt>
                   <dd>
-                    {attested ? '본인 이수 확인 · ' + basic.educationDate : '미이수 / 확인 필요'}
+                    {attested ? '본인 이수 확인 · ' + basic.educationDate : '미이수/현장이수'}
                   </dd>
                   <dt>안전서약 / 동의</dt>
                   <dd>동의 완료</dd>
@@ -653,7 +502,8 @@ export function Visitor() {
                 </div>
                 <button
                   className="button secondary w-full"
-                  onClick={() => window.location.reload()}
+                  onClick={newRegistration}
+                  disabled={busy}
                 >
                   새 작업자 등록
                 </button>
@@ -688,12 +538,7 @@ export function Visitor() {
                 )}
                 <button
                   className="button primary"
-                  disabled={
-                    !ready ||
-                    busy ||
-                    (step === 1 && !educationReady) ||
-                    (step === 2 && consent !== true)
-                  }
+                  disabled={!ready || busy || (step === 1 && (!allVideosOpened || (videos.length > 0 && !videoWatchConfirmed))) || (step === 2 && consent !== true)}
                   onClick={step === 3 ? submit : next}
                 >
                   {busy ? '접수 중…' : step === 3 ? '서약 및 등록 제출' : '다음 단계'}

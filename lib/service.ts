@@ -22,9 +22,6 @@ import {
   POLICY_VERSION,
   privacyText,
   safetyRules,
-  allSafetyRulesChecked,
-  educationPledgeSatisfied,
-  educationPledgeText,
 } from './domain';
 import {
   admin,
@@ -35,14 +32,14 @@ import {
   json,
   limit,
   logout,
+  setCookie,
   visitor,
-  rotateVisitor,
 } from './security';
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-export function videos(all = false): Video[] {
+export async function videos(all = false): Promise<Video[]> {
   return (
-    db()
+    await db()
       .prepare(
         'SELECT * FROM videos WHERE deleted=0' +
           (all ? '' : ' AND visible=1') +
@@ -64,48 +61,37 @@ export function videos(all = false): Video[] {
     visible: !!v.visible,
   }));
 }
-function completedVideoIds(owner: string): string[] {
-  return (
-    db()
-      .prepare(
-        `SELECT DISTINCT v.id FROM videos v JOIN view_events e
+async function completedVideoIds(owner: string): Promise<string[]> {
+  return (await db().prepare(`SELECT DISTINCT v.id FROM videos v JOIN view_events e
     ON e.video_id=v.id AND e.youtube_id=v.youtube_id
-    WHERE e.visitor_hash=? AND e.completed_at IS NOT NULL AND v.visible=1 AND v.deleted=0`,
-      )
-      .all(owner) as { id: string }[]
-  ).map((row) => row.id);
+    WHERE e.visitor_hash=? AND e.completed_at IS NOT NULL AND v.visible=1 AND v.deleted=0`)
+    .all(owner) as { id: string }[]).map((row) => row.id);
 }
-function clickedVideoIds(owner: string): string[] {
+async function openedVideoIds(owner: string): Promise<string[]> {
+  return (await db().prepare(`SELECT DISTINCT v.id FROM videos v JOIN view_events e
+    ON e.video_id=v.id AND e.youtube_id=v.youtube_id
+    WHERE e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
+    .all(owner) as { id: string }[]).map((row) => row.id);
+}
+async function requireAllVideosOpened(owner: string) {
+  const opened = new Set(await openedVideoIds(owner));
+  if ((await videos()).some((video) => !opened.has(video.id)))
+    fail(400, '모든 안전교육 영상 페이지를 열어본 후 다음 단계로 이동할 수 있습니다.');
+}
+export async function registrations() {
   return (
-    db()
-      .prepare(
-        `SELECT v.id FROM videos v WHERE v.visible=1 AND v.deleted=0 AND (
-      EXISTS (SELECT 1 FROM video_clicks c WHERE c.visitor_hash=? AND c.video_id=v.id AND c.youtube_id=v.youtube_id)
-      OR EXISTS (SELECT 1 FROM view_events e WHERE e.visitor_hash=? AND e.video_id=v.id AND e.youtube_id=v.youtube_id)
-    )`,
-      )
-      .all(owner, owner) as { id: string }[]
-  ).map((row) => row.id);
-}
-function requireAllVideosClicked(owner: string) {
-  const clicked = new Set(clickedVideoIds(owner));
-  if (videos().some((video) => !clicked.has(video.id)))
-    fail(400, '안전교육 영상을 모두 클릭해 주세요.');
-}
-export function registrations() {
-  return (
-    db().prepare('SELECT data FROM registrations ORDER BY created_at DESC').all() as {
+    await db().prepare('SELECT data FROM registrations ORDER BY created_at DESC').all() as {
       data: string;
     }[]
   ).map((r) => decrypt<Registration>(r.data));
 }
-export function registration(id: string) {
-  const row = db().prepare('SELECT data FROM registrations WHERE id=?').get(id) as
+export async function registration(id: string, lock = false) {
+  const row = await db().prepare('SELECT data FROM registrations WHERE id=?' + (lock ? ' FOR UPDATE' : '')).get(id) as
     { data: string } | undefined;
   if (!row) fail(404, '등록정보가 없습니다.');
   return decrypt<Registration>(row.data);
 }
-function filtered(req: NextRequest) {
+async function filtered(req: NextRequest) {
   const p = req.nextUrl.searchParams;
   const from = p.get('from') || '',
     to = p.get('to') || '',
@@ -117,7 +103,7 @@ function filtered(req: NextRequest) {
     (from && to && from > to)
   )
     fail(400, '조회 기간을 확인하세요.');
-  return registrations().filter((r) => {
+  return (await registrations()).filter((r) => {
     const day = new Date(Date.parse(r.createdAt) + 9 * 3600000).toISOString().slice(0, 10);
     return (
       (!from || day >= from) &&
@@ -168,42 +154,32 @@ function listItem(r: Registration) {
 export async function get(req: NextRequest, path: string[]) {
   const route = path.join('/');
   if (route === 'bootstrap') {
-    limit('bootstrap:' + clientKey(req), 200, 3600000);
-    const owner = await visitor(true);
-    if (db().prepare('SELECT 1 FROM registrations WHERE visitor_hash=? LIMIT 1').get(owner))
-      await rotateVisitor();
+    await limit('bootstrap:' + clientKey(req), 200, 3600000);
+    await visitor(true);
     return json({
-      videos: videos(),
+      videos: await videos(),
       today: todayKST(),
       policyVersion: POLICY_VERSION,
       requestId: randomUUID(),
     });
   }
-  if (route === 'videos') return json({ videos: videos() });
+  if (route === 'videos') return json({ videos: await videos() });
   if (route === 'video-progress') {
     const owner = await visitor();
-    return json({
-      videos: videos(),
-      clickedVideoIds: clickedVideoIds(owner),
-      completedVideoIds: completedVideoIds(owner),
-    });
+    return json({ videos: await videos(), openedVideoIds: await openedVideoIds(owner), completedVideoIds: await completedVideoIds(owner) });
   }
   if (route === 'draft') {
     const owner = await visitor();
-    const row = db()
-      .prepare('SELECT data FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
+    const hasSubmitted = !!await db().prepare('SELECT 1 FROM registrations WHERE visitor_hash=? LIMIT 1').get(owner);
+    const row = await db().prepare('SELECT data FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
       .get(owner, Date.now()) as { data: string } | undefined;
-    if (!row) return json({ draft: null });
+    if (!row) return json({ draft: null, hasSubmitted });
     const draft = draftSchema.parse(decrypt(row.data));
-    if (draft.step > 0 && !refinedBasic.safeParse(draft.basic).success) draft.step = 0;
-    if (
-      draft.step > 1 &&
-      (!allSafetyRulesChecked(draft.safetyChecks) ||
-        !educationPledgeSatisfied(draft.basic.educationCompleted, draft.educationPledged) ||
-        videos().some((video) => !clickedVideoIds(owner).includes(video.id)))
-    )
-      draft.step = 1;
-    return json({ draft });
+    if (draft.step > 1) {
+      const opened = await openedVideoIds(owner);
+      if ((await videos()).some((video) => !opened.includes(video.id))) draft.step = 1;
+    }
+    return json({ draft, hasSubmitted });
   }
   if (route === 'admin/session') {
     const a = await admin(true);
@@ -215,7 +191,7 @@ export async function get(req: NextRequest, path: string[]) {
   }
   const a = await admin();
   if (route === 'admin/dashboard') {
-    const rows = filtered(req);
+    const rows = await filtered(req);
     const page = Math.max(1, Number(req.nextUrl.searchParams.get('page') || 1) || 1);
     const size = 20;
     return json({
@@ -227,21 +203,21 @@ export async function get(req: NextRequest, path: string[]) {
     });
   }
   if (path[0] === 'admin' && path[1] === 'registrations' && path.length === 3) {
-    const r = registration(path[2]);
-    audit(a.id, 'VIEW_REGISTRATION', r.id);
+    const r = await registration(path[2]);
+    await audit(a.id, 'VIEW_REGISTRATION', r.id);
     return json({ registration: r });
   }
-  if (route === 'admin/videos') return json({ videos: videos(true) });
+  if (route === 'admin/videos') return json({ videos: await videos(true) });
   if (route === 'admin/audit') {
-    const rows = db().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 150').all() as {
+    const rows = await db().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 150').all() as {
       details: string;
     }[];
     return json({ rows: rows.map((r) => ({ ...r, details: decrypt(r.details) })) });
   }
   if (route === 'admin/export') {
-    const rows = filtered(req);
+    const rows = await filtered(req);
     if (rows.length > 10000) fail(400, '10,000건 이하로 기간을 좁혀 주세요.');
-    audit(a.id, 'EXPORT', null, {
+    await audit(a.id, 'EXPORT', null, {
       count: rows.length,
       format: req.nextUrl.searchParams.get('format') || 'csv',
     });
@@ -313,59 +289,71 @@ export async function get(req: NextRequest, path: string[]) {
 export async function mutate(req: NextRequest, path: string[]) {
   const route = path.join('/');
   const input = await body(req);
+  if (route === 'visitor/reset' && req.method === 'POST') {
+    const owner = await visitor();
+    const { preserveDraft } = z.object({ preserveDraft: z.boolean().optional() }).parse(input);
+    const next = randomBytes(32).toString('hex');
+    const nextOwner = hash(next);
+    await transaction(async () => {
+      await db().prepare('INSERT INTO visitors VALUES(?,?)').run(nextOwner, Date.now() + 2 * 60 * 60 * 1000);
+      if (preserveDraft) {
+        const row = await db().prepare('SELECT data,expires_at FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
+          .get(owner, Date.now()) as { data: string; expires_at: number } | undefined;
+        if (row) {
+          const draft = draftSchema.parse(decrypt(row.data));
+          draft.step = Math.min(draft.step, 1);
+          await db().prepare('INSERT INTO visitor_drafts VALUES(?,?,?)')
+            .run(nextOwner, encrypt(draft), row.expires_at);
+        }
+      }
+      await db().prepare('DELETE FROM visitor_drafts WHERE visitor_hash=?').run(owner);
+      await db().prepare('DELETE FROM visitors WHERE token_hash=?').run(owner);
+    });
+    await setCookie('mbco_visitor', next, 7200);
+    return json({ reset: true });
+  }
   if (route === 'draft') {
     const owner = await visitor();
     if (req.method === 'DELETE') {
-      db().prepare('DELETE FROM visitor_drafts WHERE visitor_hash=?').run(owner);
-      await rotateVisitor();
+      await db().prepare('DELETE FROM visitor_drafts WHERE visitor_hash=?').run(owner);
       return json({ cleared: true });
     }
     if (req.method === 'PUT') {
-      limit('draft:' + owner, 300, 3600000);
+      await limit('draft:' + owner, 300, 3600000);
       const draft = draftSchema.parse(input);
-      if (draft.step > 0) refinedBasic.parse(draft.basic);
-      if (draft.step > 1) {
-        requireAllVideosClicked(owner);
-        if (!allSafetyRulesChecked(draft.safetyChecks) || !draft.pledge)
-          fail(400, '안전수칙 7개 항목을 모두 확인해 주세요.');
-        if (!educationPledgeSatisfied(draft.basic.educationCompleted, draft.educationPledged))
-          fail(400, '안전교육 1시간 이수 서약에 체크해 주세요.');
-      }
-      db()
-        .prepare(
-          'INSERT INTO visitor_drafts(visitor_hash,data,expires_at) VALUES(?,?,?) ON CONFLICT(visitor_hash) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at',
-        )
+      if (draft.step > 1) await requireAllVideosOpened(owner);
+      await db().prepare('INSERT INTO visitor_drafts(visitor_hash,data,expires_at) VALUES(?,?,?) ON CONFLICT(visitor_hash) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at')
         .run(owner, encrypt(draft), Date.now() + 30 * 60 * 1000);
       return json({ saved: true });
     }
   }
   if (route === 'admin/login' && req.method === 'POST') {
-    limit('login:' + clientKey(req), 10, 15 * 60 * 1000);
-    limit('login:global', 100, 15 * 60 * 1000);
+    await limit('login:' + clientKey(req), 10, 15 * 60 * 1000);
+    await limit('login:global', 100, 15 * 60 * 1000);
     const { password } = z.object({ password: z.string().regex(/^\d{4,16}$/) }).parse(input);
-    const row = db().prepare('SELECT * FROM admins WHERE id=?').get('admin') as {
+    const row = await db().prepare('SELECT * FROM admins WHERE id=?').get('admin') as {
       password: string;
       must_change: number;
     };
-    if (!passwordMatches(password, row.password)) {
-      audit('anonymous', 'LOGIN_FAILED', null);
+    if (!row || !passwordMatches(password, row.password)) {
+      await audit('anonymous', 'LOGIN_FAILED', null);
       fail(401, '비밀번호가 올바르지 않습니다.');
     }
     await createSession('admin');
-    audit('admin', 'LOGIN', null);
+    await audit('admin', 'LOGIN', null);
     return json({ mustChange: !!row.must_change });
   }
   if (route === 'registrations' && req.method === 'POST') {
     const owner = await visitor();
-    limit('submit:' + owner, 15, 60 * 60 * 1000);
-    limit('submit:global', 500, 60 * 60 * 1000);
+    await limit('submit:' + owner, 15, 60 * 60 * 1000);
+    await limit('submit:global', 500, 60 * 60 * 1000);
     const v = registrationSchema.parse(input);
-    requireAllVideosClicked(owner);
+    await requireAllVideosOpened(owner);
     const payloadHash = createHmac('sha256', process.env.DATA_ENCRYPTION_KEY!)
       .update(JSON.stringify(v))
       .digest('hex');
-    const result = transaction(() => {
-      const old = db()
+    const result = await transaction(async () => {
+      const old = await db()
         .prepare('SELECT receipt,payload_hash,visitor_hash FROM registrations WHERE request_key=?')
         .get(v.requestId) as
         { receipt: string; payload_hash: string; visitor_hash: string } | undefined;
@@ -382,22 +370,12 @@ export async function mutate(req: NextRequest, path: string[]) {
         '-' +
         randomBytes(5).toString('hex').toUpperCase();
       const viewEvents = (
-        db()
+        await db()
           .prepare(
             'SELECT video_id,title,opened_at,completed_at FROM view_events WHERE visitor_hash=? ORDER BY opened_at',
           )
-          .all(owner) as {
-          video_id: string;
-          title: string;
-          opened_at: string;
-          completed_at: string | null;
-        }[]
-      ).map((e) => ({
-        videoId: e.video_id,
-        title: e.title,
-        openedAt: e.opened_at,
-        completedAt: e.completed_at,
-      }));
+          .all(owner) as { video_id: string; title: string; opened_at: string; completed_at: string | null }[]
+      ).map((e) => ({ videoId: e.video_id, title: e.title, openedAt: e.opened_at, completedAt: e.completed_at }));
       const r: Registration = {
         id,
         receipt,
@@ -408,10 +386,6 @@ export async function mutate(req: NextRequest, path: string[]) {
         signature: v.signature,
         consent: true,
         pledge: true,
-        safetyChecks: v.safetyChecks,
-        clickedVideoIds: clickedVideoIds(owner),
-        educationPledged: v.educationPledged,
-        educationPledgeText,
         policyVersion: POLICY_VERSION,
         policyText: privacyText,
         pledgeText: safetyRules,
@@ -422,8 +396,8 @@ export async function mutate(req: NextRequest, path: string[]) {
         viewEvents,
         version: 1,
       };
-      db()
-        .prepare('INSERT INTO registrations VALUES(?,?,?,?,?,?,?,?,?)')
+      const inserted = await db()
+        .prepare('INSERT INTO registrations VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING')
         .run(
           id,
           receipt,
@@ -435,64 +409,59 @@ export async function mutate(req: NextRequest, path: string[]) {
           v.basic.endDate,
           encrypt(r),
         );
-      audit('visitor', 'CREATE_REGISTRATION', id, { policyVersion: POLICY_VERSION });
+      if (!inserted.changes) {
+        const existing = await db().prepare('SELECT receipt,payload_hash,visitor_hash FROM registrations WHERE request_key=?').get(v.requestId) as
+          { receipt: string; payload_hash: string; visitor_hash: string } | undefined;
+        if (!existing || existing.visitor_hash !== owner || existing.payload_hash !== payloadHash)
+          fail(409, '이미 사용된 제출 요청입니다.');
+        return { receipt: existing.receipt, duplicate: true };
+      }
+      await audit('visitor', 'CREATE_REGISTRATION', id, { policyVersion: POLICY_VERSION });
       return { receipt, duplicate: false };
     });
-    db().prepare('DELETE FROM visitor_drafts WHERE visitor_hash=?').run(owner);
+    await db().prepare('DELETE FROM visitor_drafts WHERE visitor_hash=?').run(owner);
     return json(result, 201);
-  }
-  if (route === 'video-clicks' && req.method === 'POST') {
-    const owner = await visitor();
-    limit('video-click:' + owner, 100, 3600000);
-    const v = z.object({ videoId: z.uuid() }).parse(input);
-    const video = videos().find((row) => row.id === v.videoId);
-    if (!video) fail(404, '영상을 찾을 수 없습니다.');
-    db()
-      .prepare(
-        'INSERT INTO video_clicks(visitor_hash,video_id,youtube_id,clicked_at) VALUES(?,?,?,?) ON CONFLICT(visitor_hash,video_id,youtube_id) DO NOTHING',
-      )
-      .run(owner, video.id, video.youtubeId, new Date().toISOString());
-    return json({ clickedVideoIds: clickedVideoIds(owner) });
   }
   if (route === 'video-events' && req.method === 'POST') {
     const owner = await visitor();
-    limit('video:' + owner, 100, 3600000);
+    await limit('video:' + owner, 100, 3600000);
     const v = z.object({ videoId: z.uuid() }).parse(input);
-    const video = videos().find((r) => r.id === v.videoId);
+    const video = (await videos()).find((r) => r.id === v.videoId);
     if (!video) fail(404, '영상을 찾을 수 없습니다.');
     const eventId = randomUUID();
-    db()
-      .prepare(
-        'INSERT INTO view_events(id,visitor_hash,video_id,title,opened_at,youtube_id) VALUES(?,?,?,?,?,?)',
-      )
+    await db().prepare('INSERT INTO view_events(id,visitor_hash,video_id,title,opened_at,youtube_id) VALUES(?,?,?,?,?,?)')
       .run(eventId, owner, video.id, video.title, new Date().toISOString(), video.youtubeId);
     return json({ eventId, status: 'OPENED_ONLY' });
   }
+  if (route === 'video-events/start' && req.method === 'POST') {
+    const owner = await visitor();
+    await limit('video-start:' + owner, 100, 3600000);
+    const { eventId } = z.object({ eventId: z.uuid() }).parse(input);
+    const event = await db().prepare(`SELECT e.id FROM view_events e JOIN videos v
+      ON v.id=e.video_id AND v.youtube_id=e.youtube_id
+      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
+      .get(eventId, owner);
+    if (!event) fail(404, '영상 열람 기록을 찾을 수 없습니다.');
+    await db().prepare('UPDATE view_events SET started_at=? WHERE id=?')
+      .run(new Date().toISOString(), eventId);
+    return json({ started: true });
+  }
   if (route === 'video-events/complete' && req.method === 'POST') {
     const owner = await visitor();
-    limit('video-complete:' + owner, 100, 3600000);
-    const { eventId, durationSeconds } = z
-      .object({
-        eventId: z.uuid(),
-        durationSeconds: z.number().finite().min(1).max(14400),
-      })
-      .parse(input);
-    const event = db()
-      .prepare(
-        `SELECT e.opened_at,e.completed_at,v.id
+    await limit('video-complete:' + owner, 100, 3600000);
+    const { eventId, durationSeconds } = z.object({
+      eventId: z.uuid(), durationSeconds: z.number().finite().min(1).max(14400),
+    }).parse(input);
+    const event = await db().prepare(`SELECT e.started_at,e.completed_at,v.id
       FROM view_events e JOIN videos v ON v.id=e.video_id AND v.youtube_id=e.youtube_id
-      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`,
-      )
-      .get(eventId, owner) as
-      { opened_at: string; completed_at: string | null; id: string } | undefined;
+      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
+      .get(eventId, owner) as { started_at: string | null; completed_at: string | null; id: string } | undefined;
     if (!event) fail(404, '영상 열람 기록을 찾을 수 없습니다.');
-    if (!event.completed_at && Date.now() - Date.parse(event.opened_at) < durationSeconds * 450)
+    if (!event.started_at || (!event.completed_at && Date.now() - Date.parse(event.started_at) < durationSeconds * 900))
       fail(400, '영상 재생이 완료된 후 다시 시도해 주세요.');
-    if (!event.completed_at)
-      db()
-        .prepare('UPDATE view_events SET completed_at=? WHERE id=?')
-        .run(new Date().toISOString(), eventId);
-    return json({ completedVideoIds: completedVideoIds(owner) });
+    if (!event.completed_at) await db().prepare('UPDATE view_events SET completed_at=? WHERE id=?')
+      .run(new Date().toISOString(), eventId);
+    return json({ completedVideoIds: await completedVideoIds(owner) });
   }
   if (route === 'admin/logout' && req.method === 'POST') {
     await admin(true);
@@ -501,22 +470,21 @@ export async function mutate(req: NextRequest, path: string[]) {
   }
   if (route === 'admin/password' && req.method === 'POST') {
     const a = await admin(true);
-    limit('password:' + a.id, 5, 15 * 60 * 1000);
+    await limit('password:' + a.id, 5, 15 * 60 * 1000);
     const v = z
       .object({ current: z.string().min(4).max(16), next: passwordSchema, confirm: z.string() })
       .refine((v) => v.next === v.confirm, '새 비밀번호 확인이 일치하지 않습니다.')
       .refine((v) => v.current !== v.next, '기존 비밀번호와 다르게 설정하세요.')
       .parse(input);
-    const old = db().prepare('SELECT password FROM admins WHERE id=?').get(a.id) as {
-      password: string;
-    };
-    if (!passwordMatches(v.current, old.password)) fail(400, '기존 비밀번호가 올바르지 않습니다.');
-    transaction(() => {
-      db()
+    await transaction(async () => {
+      const old = await db().prepare('SELECT password FROM admins WHERE id=? FOR UPDATE').get(a.id) as
+        { password: string } | undefined;
+      if (!old || !passwordMatches(v.current, old.password)) fail(400, '기존 비밀번호가 올바르지 않습니다.');
+      await db()
         .prepare('UPDATE admins SET password=?,must_change=0 WHERE id=?')
         .run(passwordHash(v.next), a.id);
-      db().prepare('DELETE FROM sessions WHERE admin_id=?').run(a.id);
-      audit(a.id, 'CHANGE_PASSWORD', null);
+      await db().prepare('DELETE FROM sessions WHERE admin_id=?').run(a.id);
+      await audit(a.id, 'CHANGE_PASSWORD', null);
     });
     await logout();
     return json({ ok: true });
@@ -528,11 +496,11 @@ export async function mutate(req: NextRequest, path: string[]) {
       const v = z
         .object({ reason: z.string().trim().min(3).max(500), version: z.number().int() })
         .parse(input);
-      transaction(() => {
-        const r = registration(id);
+      await transaction(async () => {
+        const r = await registration(id, true);
         if (r.version !== v.version) fail(409, '다른 관리자가 수정했습니다. 다시 조회하세요.');
-        db().prepare('DELETE FROM registrations WHERE id=?').run(id);
-        audit(a.id, 'DELETE_REGISTRATION', id, { reason: v.reason });
+        await db().prepare('DELETE FROM registrations WHERE id=?').run(id);
+        await audit(a.id, 'DELETE_REGISTRATION', id, { reason: v.reason });
       });
       return json({ ok: true });
     }
@@ -544,8 +512,8 @@ export async function mutate(req: NextRequest, path: string[]) {
           version: z.number().int(),
         })
         .parse(input);
-      transaction(() => {
-        const r = registration(id);
+      await transaction(async () => {
+        const r = await registration(id, true);
         if (r.version !== v.version) fail(409, '다른 관리자가 수정했습니다. 다시 조회하세요.');
         const changed = Object.keys(v.basic).filter(
           (k) => v.basic[k as keyof typeof v.basic] !== r.basic[k as keyof typeof r.basic],
@@ -561,10 +529,10 @@ export async function mutate(req: NextRequest, path: string[]) {
           );
         r.basic = v.basic;
         r.version++;
-        db()
+        await db()
           .prepare('UPDATE registrations SET start_date=?,end_date=?,data=? WHERE id=?')
           .run(v.basic.startDate, v.basic.endDate, encrypt(r), id);
-        audit(a.id, 'UPDATE_REGISTRATION', id, { reason: v.reason, fields: changed });
+        await audit(a.id, 'UPDATE_REGISTRATION', id, { reason: v.reason, fields: changed });
       });
       return json({ ok: true });
     }
@@ -582,27 +550,27 @@ export async function mutate(req: NextRequest, path: string[]) {
         version: z.number().int(),
       })
       .parse(input);
-    transaction(() => {
-      const r = registration(path[2]);
+    await transaction(async () => {
+      const r = await registration(path[2], true);
       if (r.version !== v.version) fail(409, '다른 관리자가 수정했습니다. 다시 조회하세요.');
       r.educationVerified = v.verified;
       r.verificationNote = v.note;
       r.verifiedAt = v.verified ? new Date().toISOString() : null;
       r.version++;
-      db().prepare('UPDATE registrations SET data=? WHERE id=?').run(encrypt(r), r.id);
-      audit(a.id, v.verified ? 'VERIFY_EDUCATION' : 'REVOKE_EDUCATION', r.id, { note: v.note });
+      await db().prepare('UPDATE registrations SET data=? WHERE id=?').run(encrypt(r), r.id);
+      await audit(a.id, v.verified ? 'VERIFY_EDUCATION' : 'REVOKE_EDUCATION', r.id, { note: v.note });
     });
     return json({ ok: true });
   }
   if (path[0] === 'admin' && path[1] === 'videos') {
     const id = path[2];
     if (req.method === 'DELETE' && id) {
-      transaction(() => {
-        const result = db()
+      await transaction(async () => {
+        const result = await db()
           .prepare('UPDATE videos SET deleted=1,visible=0 WHERE id=? AND deleted=0')
           .run(id);
         if (!result.changes) fail(404, '영상이 없습니다.');
-        audit(a.id, 'DELETE_VIDEO', id);
+        await audit(a.id, 'DELETE_VIDEO', id);
       });
       return json({ ok: true });
     }
@@ -623,19 +591,19 @@ export async function mutate(req: NextRequest, path: string[]) {
       if (!response.ok)
         fail(422, '유튜브에서 공개 영상을 확인할 수 없습니다. 주소와 공개 설정을 확인하세요.');
       const newId = id || randomUUID();
-      transaction(() => {
+      await transaction(async () => {
         if (id) {
-          const result = db()
+          const result = await db()
             .prepare(
               'UPDATE videos SET title=?,youtube_id=?,sort_order=?,visible=? WHERE id=? AND deleted=0',
             )
             .run(v.title, youtube, v.sortOrder, +v.visible, id);
           if (!result.changes) fail(404, '영상이 없습니다.');
         } else
-          db()
+          await db()
             .prepare('INSERT INTO videos VALUES(?,?,?,?,?,0)')
             .run(newId, v.title, youtube, v.sortOrder, +v.visible);
-        audit(a.id, id ? 'UPDATE_VIDEO' : 'CREATE_VIDEO', newId);
+        await audit(a.id, id ? 'UPDATE_VIDEO' : 'CREATE_VIDEO', newId);
       });
       return json({ ok: true, id: newId });
     }

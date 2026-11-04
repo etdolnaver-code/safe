@@ -20,6 +20,7 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
       env: {
         ...process.env,
         NODE_ENV: 'production',
+        LOCAL_SQLITE_TEST: 'true',
         APP_ORIGIN: base,
         DATABASE_PATH: path,
         DATA_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
@@ -125,10 +126,8 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
   const payload = {
     basic,
     pledge: true,
-    safetyChecks: [true, true, true, true, true, true, true],
     consent: true,
     educationAttested: false,
-    educationPledged: true,
     signature: [
       [
         { x: 0.1, y: 0.2 },
@@ -138,70 +137,13 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     requestId: randomUUID(),
   };
   let id = '',
-    receipt = '',
-    newWorkerCookie = '';
+    receipt = '';
   await t.test('방문자 세션 및 서버 동의/서명 검증', async () => {
     const boot = await call('bootstrap');
     assert.equal(boot.status, 200);
     visitorCookie = boot.headers.get('set-cookie')!.split(';')[0];
     assert.equal((await call('registrations', { ...payload, consent: false })).status, 400);
     assert.equal((await call('registrations', { ...payload, signature: [] })).status, 400);
-    const nullSignature = await call('registrations', { ...payload, signature: null });
-    assert.equal(nullSignature.status, 400);
-    assert.equal((await nullSignature.json()).error, '서명란에 직접 서명해 주세요.');
-  });
-  await t.test('첫 단계의 유효한 교육 예정일은 저장하고 잘못된 출처는 거부', async () => {
-    const draft = {
-      basic,
-      step: 1,
-      pledge: false,
-      safetyChecks: [false, false, false, false, false, false, false],
-      attested: false,
-      educationPledged: false,
-      consent: null,
-      requestId: randomUUID(),
-    };
-    const denied = await call('draft', draft, {
-      method: 'PUT',
-      origin: 'https://other.example',
-    });
-    assert.equal(denied.status, 403);
-    assert.match((await denied.json()).error, /현재 사이트 주소/);
-    const missingDate = { ...draft, basic: { ...basic, educationDate: '' } };
-    assert.equal((await call('draft', { ...missingDate, step: 0 }, { method: 'PUT' })).status, 200);
-    const invalid = await call('draft', missingDate, { method: 'PUT' });
-    assert.equal(invalid.status, 400);
-    assert.equal((await invalid.json()).error, '교육 예정일을 입력하세요.');
-    const nullDate = await call(
-      'draft',
-      { ...draft, basic: { ...basic, educationDate: null } },
-      { method: 'PUT' },
-    );
-    assert.equal(nullDate.status, 400);
-    assert.equal((await nullDate.json()).error, '교육일 또는 교육 예정일을 선택해 주세요.');
-    const nullName = await call(
-      'draft',
-      { ...draft, basic: { ...basic, name: null } },
-      { method: 'PUT' },
-    );
-    assert.equal(nullName.status, 400);
-    assert.equal((await nullName.json()).error, '성명을 입력해 주세요.');
-    const invalidPhone = await call(
-      'draft',
-      { ...draft, basic: { ...basic, phone: '010-1234' } },
-      { method: 'PUT' },
-    );
-    assert.equal(invalidPhone.status, 400);
-    assert.equal((await invalidPhone.json()).error, '010-0000-0000 형식으로 입력하세요.');
-    assert.equal((await call('draft', draft, { method: 'PUT' })).status, 200);
-    const restored = await (await call('draft')).json();
-    assert.equal(restored.draft.step, 1);
-    assert.equal(restored.draft.basic.educationDate, basic.educationDate);
-    assert.equal((await call('draft', { ...draft, step: 0 }, { method: 'PUT' })).status, 200);
-    const back = await (await call('draft')).json();
-    assert.equal(back.draft.step, 0);
-    assert.deepEqual(back.draft.basic, basic);
-    assert.equal((await call('draft', draft, { method: 'PUT' })).status, 200);
   });
   await t.test('동시 중복 제출은 하나의 DB 레코드와 접수번호로 처리', async () => {
     const responses = await Promise.all([
@@ -209,9 +151,6 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
       call('registrations', payload),
     ]);
     for (const r of responses) assert.equal(r.status, 201);
-    const nextWorker = await call('bootstrap');
-    newWorkerCookie = nextWorker.headers.get('set-cookie')!.split(';')[0];
-    assert.notEqual(newWorkerCookie, visitorCookie);
     const [a, b] = await Promise.all(responses.map((r) => r.json()));
     assert.equal(a.receipt, b.receipt);
     assert.notEqual(a.duplicate, b.duplicate);
@@ -303,7 +242,7 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     assert.equal(d.registration.originalBasic.company, '=2+2');
     assert.equal(d.registration.basic.company, '변경업체');
   });
-  await t.test('영상 클릭과 재생 완료를 분리하고 클릭 기준으로 단계 이동', async () => {
+  await t.test('영상 노출/열람 기록은 교육 이수와 분리', async () => {
     const store = new DatabaseSync(path);
     const videoId = randomUUID();
     const secondVideoId = randomUUID();
@@ -316,183 +255,60 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     store.close();
     const list = await (await call('videos')).json();
     assert.equal(list.videos.length, 2);
-    const before = await (await call('video-progress')).json();
-    assert.deepEqual(before.clickedVideoIds, []);
-    assert.deepEqual(before.completedVideoIds, []);
-    const gatedDraft = {
-      basic,
-      step: 2,
-      pledge: true,
-      safetyChecks: payload.safetyChecks,
-      attested: false,
-      educationPledged: true,
-      consent: null,
-      requestId: randomUUID(),
-    };
-    const partialDraft = {
-      ...gatedDraft,
-      step: 1,
-      pledge: false,
-      safetyChecks: [true, true, true, true, true, true, false],
-    };
-    const { educationPledged: _previouslyUnavailable, ...oldDraft } = partialDraft;
-    assert.equal((await call('draft', oldDraft, { method: 'PUT' })).status, 200);
-    const restored = (await (await call('draft')).json()).draft;
-    assert.equal(restored.basic.name, basic.name);
-    assert.deepEqual(restored.safetyChecks, partialDraft.safetyChecks);
-    assert.equal(restored.educationPledged, false);
-    assert.equal((await call('draft', partialDraft, { method: 'PUT' })).status, 200);
-    assert.equal((await (await call('draft')).json()).draft.educationPledged, true);
+    const before = await call('video-progress');
+    const initialProgress = await before.json();
+    assert.deepEqual(initialProgress.openedVideoIds, []);
+    assert.deepEqual(initialProgress.completedVideoIds, []);
+    const gatedDraft = { basic, step: 2, pledge: true, attested: false, consent: null, requestId: randomUUID() };
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
-    assert.equal(
-      (await call('registrations', { ...payload, requestId: randomUUID() })).status,
-      400,
-    );
-    assert.equal((await call('video-clicks', { videoId })).status, 200);
-    const firstClick = await (await call('video-progress')).json();
-    assert.deepEqual(firstClick.clickedVideoIds, [videoId]);
-    assert.deepEqual(firstClick.completedVideoIds, []);
-    assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
-    const clickedStore = new DatabaseSync(path);
-    assert.equal(
-      (clickedStore.prepare('SELECT COUNT(*) AS count FROM view_events').get() as { count: number })
-        .count,
-      0,
-    );
-    clickedStore.close();
+    assert.equal((await call('registrations', { ...payload, requestId: randomUUID() })).status, 400);
     const opened = await call('video-events', { videoId });
     assert.equal(opened.status, 200);
     const { eventId } = await opened.json();
-    assert.equal(
-      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
-      400,
-    );
+    const firstProgress = await (await call('video-progress')).json();
+    assert.deepEqual(firstProgress.openedVideoIds, [videoId]);
+    assert.deepEqual(firstProgress.completedVideoIds, []);
+    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 400);
+    assert.equal((await call('video-events/start', { eventId })).status, 200);
+    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 400);
     assert.deepEqual((await (await call('video-progress')).json()).completedVideoIds, []);
     const elapsedStore = new DatabaseSync(path);
-    elapsedStore
-      .prepare('UPDATE view_events SET opened_at=? WHERE id=?')
-      .run(new Date(Date.now() - 20000).toISOString(), eventId);
+    elapsedStore.prepare('UPDATE view_events SET started_at=? WHERE id=?')
+      .run(new Date(Date.now() - 61000).toISOString(), eventId);
     elapsedStore.close();
-    assert.equal(
-      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
-      400,
-    );
-    const completedStore = new DatabaseSync(path);
-    completedStore
-      .prepare('UPDATE view_events SET opened_at=? WHERE id=?')
-      .run(new Date(Date.now() - 31000).toISOString(), eventId);
-    completedStore.close();
-    assert.equal(
-      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
-      200,
-    );
+    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 200);
     assert.deepEqual((await (await call('video-progress')).json()).completedVideoIds, [videoId]);
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
-    assert.equal((await call('video-clicks', { videoId: secondVideoId })).status, 200);
-    const clickedAll = await (await call('video-progress')).json();
-    assert.deepEqual(new Set(clickedAll.clickedVideoIds), new Set([videoId, secondVideoId]));
-    assert.deepEqual(clickedAll.completedVideoIds, [videoId]);
-    assert.equal(
-      (await call('draft', { ...partialDraft, step: 2 }, { method: 'PUT' })).status,
-      400,
-    );
-    assert.equal(
-      (await call('draft', { ...gatedDraft, educationPledged: false }, { method: 'PUT' })).status,
-      400,
-    );
-    assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 200);
-    assert.equal((await (await call('draft')).json()).draft.step, 2);
-    const separateWorkerProgress = await (
-      await call('video-progress', undefined, { cookie: newWorkerCookie })
-    ).json();
-    assert.deepEqual(separateWorkerProgress.clickedVideoIds, []);
-    assert.deepEqual(separateWorkerProgress.completedVideoIds, []);
-    for (const clickedVideoId of [videoId, secondVideoId])
-      assert.equal(
-        (await call('video-clicks', { videoId: clickedVideoId }, { cookie: newWorkerCookie }))
-          .status,
-        200,
-      );
-    assert.deepEqual(
-      (await (await call('video-progress', undefined, { cookie: newWorkerCookie })).json())
-        .completedVideoIds,
-      [],
-    );
-    assert.equal(
-      (
-        await call(
-          'registrations',
-          { ...payload, educationPledged: false, requestId: randomUUID() },
-          { cookie: newWorkerCookie },
-        )
-      ).status,
-      400,
-    );
-    const clickOnlyRegistration = await call(
-      'registrations',
-      { ...payload, requestId: randomUUID() },
-      { cookie: newWorkerCookie },
-    );
-    assert.equal(clickOnlyRegistration.status, 201);
-    const { receipt: clickOnlyReceipt } = await clickOnlyRegistration.json();
-    const clickOnlyStore = new DatabaseSync(path);
-    const { id: clickOnlyId } = clickOnlyStore
-      .prepare('SELECT id FROM registrations WHERE receipt=?')
-      .get(clickOnlyReceipt) as { id: string };
-    clickOnlyStore.close();
-    const clickOnlyDetail = await (
-      await call('admin/registrations/' + clickOnlyId, undefined, { admin: true })
-    ).json();
-    assert.deepEqual(
-      new Set(clickOnlyDetail.registration.clickedVideoIds),
-      new Set([videoId, secondVideoId]),
-    );
-    assert.deepEqual(clickOnlyDetail.registration.viewEvents, []);
-    assert.equal(clickOnlyDetail.registration.educationPledged, true);
-    assert.equal(
-      clickOnlyDetail.registration.educationPledgeText,
-      '안전교육 1시간을 이수할 것을 서약합니다.',
-    );
     const secondOpened = await call('video-events', { videoId: secondVideoId });
     const { eventId: secondEventId } = await secondOpened.json();
+    assert.deepEqual(new Set((await (await call('video-progress')).json()).openedVideoIds), new Set([videoId, secondVideoId]));
+    assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 200);
+    assert.equal((await (await call('draft')).json()).draft.step, 2);
+    assert.equal((await call('video-events/start', { eventId: secondEventId })).status, 200);
     const secondStore = new DatabaseSync(path);
-    secondStore
-      .prepare('UPDATE view_events SET opened_at=? WHERE id=?')
+    secondStore.prepare('UPDATE view_events SET started_at=? WHERE id=?')
       .run(new Date(Date.now() - 61000).toISOString(), secondEventId);
     secondStore.close();
-    assert.equal(
-      (await call('video-events/complete', { eventId: secondEventId, durationSeconds: 60 })).status,
-      200,
-    );
-    assert.deepEqual(
-      new Set((await (await call('video-progress')).json()).completedVideoIds),
-      new Set([videoId, secondVideoId]),
-    );
-    const addedVideoId = randomUUID();
-    const addedStore = new DatabaseSync(path);
-    addedStore
-      .prepare('INSERT INTO videos VALUES(?,?,?,?,?,0)')
-      .run(addedVideoId, '추가 영상', '9bZkp7q19f0', 2, 1);
-    addedStore.close();
-    const addedProgress = await (await call('video-progress')).json();
-    assert.equal(addedProgress.videos.length, 3);
-    assert.equal(addedProgress.clickedVideoIds.length, 2);
-    assert.equal(addedProgress.completedVideoIds.length, 2);
+    assert.equal((await call('video-events/complete', { eventId: secondEventId, durationSeconds: 60 })).status, 200);
+    assert.deepEqual(new Set((await (await call('video-progress')).json()).completedVideoIds), new Set([videoId, secondVideoId]));
+    const previousCookie = visitorCookie;
+    const reset = await call('visitor/reset', { preserveDraft: true });
+    assert.equal(reset.status, 200);
+    visitorCookie = reset.headers.get('set-cookie')!.split(';')[0];
+    assert.notEqual(visitorCookie, previousCookie);
+    assert.equal((await call('video-progress', undefined, { cookie: previousCookie })).status, 401);
+    const newProgress = await (await call('video-progress')).json();
+    assert.deepEqual(newProgress.openedVideoIds, []);
+    assert.deepEqual(newProgress.completedVideoIds, []);
     assert.equal((await (await call('draft')).json()).draft.step, 1);
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
-    assert.equal(
-      (await call('admin/videos/' + addedVideoId, {}, { method: 'DELETE', admin: true })).status,
-      200,
-    );
-    assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 200);
-    const cancelled = await call('draft', {}, { method: 'DELETE' });
-    assert.equal(cancelled.status, 200);
-    const resetCookie = cancelled.headers.get('set-cookie')!.split(';')[0];
-    assert.deepEqual(
-      (await (await call('video-progress', undefined, { cookie: resetCookie })).json())
-        .clickedVideoIds,
-      [],
-    );
+    const retained = new DatabaseSync(path);
+    assert.equal((retained.prepare('SELECT COUNT(*) AS n FROM view_events').get() as { n: number }).n >= 2, true);
+    retained.close();
+    const cancelReset = await call('visitor/reset', {});
+    assert.equal(cancelReset.status, 200);
+    visitorCookie = cancelReset.headers.get('set-cookie')!.split(';')[0];
+    assert.equal((await (await call('draft')).json()).draft, null);
     assert.equal(
       (
         await call(

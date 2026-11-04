@@ -53,7 +53,7 @@ function EducationBadge({ r }: { r: Pick<Row, 'educationAttested' | 'educationVe
         ? '관리자 확인'
         : r.educationAttested
           ? '본인 이수 확인'
-          : '미이수 / 확인 필요'}
+          : '미이수/현장이수'}
     </span>
   );
 }
