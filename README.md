@@ -82,6 +82,7 @@ npm audit
 | ---------------------- | ---------------------------------------------------------------- |
 | APP_ORIGIN             | 변경 API에서 정확하게 허용할 Origin. 기본 http://localhost:3000  |
 | DATABASE_URL           | Supabase Transaction Pooler PostgreSQL URI. Vercel 서버 전용 비밀값 |
+| DATABASE_SSL_CA_BASE64 | Supabase Database Settings에서 받은 CA 인증서의 Base64. 서버의 TLS 인증서 검증에 사용 |
 | DATABASE_PATH          | 로컬 개발·이전용 SQLite 파일 경로. Vercel에서 사용하지 않음 |
 | LOCAL_SQLITE_DEV       | 로컬 개발에서만 SQLite 사용을 명시적으로 허용 |
 | DB_MIGRATION_TARGET    | 이전 대상 확인값. DATABASE_URL의 `host[:port]/database`와 일치해야 함 |
@@ -118,7 +119,7 @@ npm audit
 1. Supabase 프로젝트에서 PostgreSQL **Transaction Pooler** 연결 문자열을 준비합니다. 이 값은 서버의 `DATABASE_URL`에만 둡니다. 브라우저용 Supabase 키는 필요하지 않습니다.
 2. 로컬 SQLite를 운영 데이터로 옮길 때는 기존 `DATA_ENCRYPTION_KEY`를 유지하고 `npm run db:backup-sqlite`와 `npm run db:migrate-sqlite`로 백업·읽기 검사를 먼저 수행합니다. 백업은 `data/backups`에 보관하며 Git에 올리지 않습니다.
 3. `DB_MIGRATION_TARGET`에 연결 문자열의 정확한 `host[:port]/database`를 지정합니다. `npm run db:init -- --apply --schema-only`로 빈 앱 테이블을 생성한 다음 `npm run db:migrate-sqlite -- --apply`로 옮깁니다. 대상 테이블에 데이터가 있으면 스크립트가 중단되므로 중복 이전을 하지 않습니다. 이전 전후 테이블별 건수와 관리자 복호화 조회를 대조합니다.
-4. GitHub 저장소를 Vercel의 Next.js 프로젝트에 연결합니다. Production 환경에 `DATABASE_URL`, 기존 `DATA_ENCRYPTION_KEY`, `COOKIE_SECURE=true`를 서버 변수로 넣습니다. 최초 관리자 계정을 새로 만들 때만 강한 `INITIAL_ADMIN_PASSWORD`를 설정합니다. `APP_ORIGIN`은 Vercel에서 필요하지 않으며 실제 요청 도메인을 검증합니다.
+4. GitHub 저장소를 Vercel의 Next.js 프로젝트에 연결합니다. Production 환경에 `DATABASE_URL`, Supabase Database Settings의 SSL 인증서를 Base64로 인코딩한 `DATABASE_SSL_CA_BASE64`, 기존 `DATA_ENCRYPTION_KEY`, `COOKIE_SECURE=true`를 서버 변수로 넣습니다. 최초 관리자 계정을 새로 만들 때만 강한 `INITIAL_ADMIN_PASSWORD`를 설정합니다. `APP_ORIGIN`은 Vercel에서 필요하지 않으며 실제 요청 도메인을 검증합니다.
 5. 새 Production 배포 후 비로그인 방문자 화면과 관리자 인증, 테스트 등록·조회·수정·재로그인·재배포 후 재조회를 확인합니다. 운영 등록 전 실제 영상과 개인정보 보유정책도 확인합니다.
 
 앱에는 파일 업로드 기능이 없으므로 Supabase Storage 버킷을 만들지 않습니다. 출입등록, 서명, 영상 기록, 관리자 설정, 세션, 초안, 감사로그는 모두 PostgreSQL 테이블에 저장합니다. 테이블은 공개 역할의 직접 접근을 철회하고 RLS를 활성화합니다. 앱의 서버 API가 관리자 인증과 권한을 검사합니다.

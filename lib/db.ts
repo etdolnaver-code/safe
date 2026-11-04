@@ -154,7 +154,12 @@ function databasePool() {
     connectionString: validateConfiguration(), max: 1, connectionTimeoutMillis: 5000,
     idleTimeoutMillis: 10000, statement_timeout: 10000, query_timeout: 12000,
     ssl: process.env.VERCEL !== '1' && process.env.DATABASE_SSL === 'false'
-      ? false : { rejectUnauthorized: true },
+      ? false : {
+        rejectUnauthorized: true,
+        ca: process.env.DATABASE_SSL_CA_BASE64
+          ? Buffer.from(process.env.DATABASE_SSL_CA_BASE64, 'base64').toString('utf8')
+          : undefined,
+      },
   });
   pool.on('error', () => { /* pg discards broken idle clients; never log connection details. */ });
   return pool;
