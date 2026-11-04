@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Play, Info, ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { Play, Info, ArrowLeft, CheckCircle2, ExternalLink } from 'lucide-react';
 import { api, send } from '@/lib/client';
 
 type Player = { getDuration(): number; destroy(): void };
@@ -111,7 +111,8 @@ export function VideoPlayer({ id, youtubeId, title }: { id: string; youtubeId: s
       <div className="video-stage">
         {playing ? (
           <iframe ref={frame} title={title}
-            src={'https://www.youtube-nocookie.com/embed/' + youtubeId + '?autoplay=1&enablejsapi=1&origin=' + encodeURIComponent(origin)}
+            src={'https://www.youtube.com/embed/' + youtubeId + '?autoplay=1&enablejsapi=1&origin=' + encodeURIComponent(origin)}
+            referrerPolicy="strict-origin-when-cross-origin"
             allow="autoplay; encrypted-media; picture-in-picture" allowFullScreen />
         ) : (
           <button type="button" onClick={play} disabled={busy || opening}>
@@ -119,6 +120,10 @@ export function VideoPlayer({ id, youtubeId, title }: { id: string; youtubeId: s
           </button>
         )}
       </div>
+      <a className="education-direct-link" href={'https://www.youtube.com/watch?v=' + youtubeId}
+        target="_blank" rel="noopener">
+        <ExternalLink size={20} aria-hidden="true" /> YouTube에서 직접 보기
+      </a>
       {completed && <p className="notice"><CheckCircle2 size={20} /> 이 영상의 시청 완료가 기록되었습니다.</p>}
       {completed && (
         <button type="button" className="education-return-button education-return-bottom" onClick={returnToRegistration}>
@@ -130,6 +135,7 @@ export function VideoPlayer({ id, youtubeId, title }: { id: string; youtubeId: s
         <span>페이지 열람은 ‘열어봄’으로 기록됩니다. 영상 종료 기록과 실제 안전교육 이수 확인은 별도로 구분됩니다.</span>
       </div>
       <p className="field-help">재생을 시작하면 YouTube 외부 서비스가 연결됩니다. 이 창을 닫아도 원래 등록 창의 입력 내용은 유지됩니다.</p>
+      <p className="field-help">YouTube에서 직접 본 영상의 시청 완료는 자동 기록되지 않습니다.</p>
     </main>
   );
 }

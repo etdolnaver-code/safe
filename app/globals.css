@@ -1133,6 +1133,30 @@ fieldset {
   height: 100%;
   border: 0;
 }
+.education-direct-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  margin-bottom: 20px;
+  border: 2px solid #2057b8;
+  border-radius: 10px;
+  color: #2057b8;
+  background: #fff;
+  font-size: 17px;
+  font-weight: 800;
+  text-decoration: none;
+}
+.education-direct-link:hover {
+  color: #fff;
+  background: #2057b8;
+}
+.education-direct-link:focus-visible {
+  outline: 3px solid #4c8dff;
+  outline-offset: 3px;
+}
 .video-stage button {
   display: flex;
   flex-direction: column;
