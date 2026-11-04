@@ -55,7 +55,7 @@ export async function limit(key: string, max: number, windowMs: number) {
   const now = Date.now();
   await db()
     .prepare(
-      'INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN reset_at<=? THEN 1 ELSE count+1 END, reset_at=CASE WHEN reset_at<=? THEN excluded.reset_at ELSE reset_at END',
+      'INSERT INTO rate_limits(key,count,reset_at) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN rate_limits.reset_at<=? THEN 1 ELSE rate_limits.count+1 END, reset_at=CASE WHEN rate_limits.reset_at<=? THEN excluded.reset_at ELSE rate_limits.reset_at END',
     )
     .run(key, now + windowMs, now, now);
   const row = await db().prepare('SELECT count FROM rate_limits WHERE key=?').get(key) as {
