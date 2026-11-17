@@ -954,7 +954,7 @@ fieldset {
 }
 .completion {
   text-align: center;
-  padding: 16px 0;
+  padding: 24px 0 12px;
 }
 .completion-check {
   width: 78px;
@@ -972,34 +972,8 @@ fieldset {
   font-weight: 700;
   color: var(--navy);
 }
-.completion > p {
-  font-size: 12px;
-  color: #8190a3;
-  margin-top: 14px;
-}
-.receipt {
-  padding: 22px;
-  background: #f1f6ff;
-  border: 1px solid #d4e2f9;
-  border-radius: 10px;
-  margin: 25px 0;
-}
-.receipt small {
-  display: block;
-  font-size: 11px;
-  color: #8494a9;
-}
-.receipt strong {
-  display: block;
-  font-size: 18px;
-  color: var(--blue);
-  letter-spacing: 1px;
-  margin-top: 5px;
-  overflow-wrap: anywhere;
-}
-.completion .notice {
-  text-align: left;
-  margin-bottom: 22px;
+.completion .button {
+  margin-top: 32px;
 }
 .login-dialog {
   border: 0;

@@ -44,7 +44,6 @@ export function Visitor() {
     [signature, setSignature] = useState<Signature>([]),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
-    [receipt, setReceipt] = useState(''),
     [ready, setReady] = useState(false);
   const request = useRef('');
   const submitting = useRef(false);
@@ -191,8 +190,7 @@ export function Visitor() {
     setBusy(true);
     try {
       await saveQueue.current;
-      const d = await api<{ receipt: string }>('registrations', send(payload));
-      setReceipt(d.receipt);
+      await api('registrations', send(payload));
       setStep(4);
       setBasic(emptyBasic);
       setSignature([]);
@@ -504,19 +502,6 @@ export function Visitor() {
                   <br />
                   등록이 완료되었습니다.
                 </h3>
-                <p>접수번호를 저장한 후 현장 담당자에게 안내해 주세요.</p>
-                <div className="receipt">
-                  <small>접수번호</small>
-                  <strong>{receipt}</strong>
-                </div>
-                <div className="notice warning">
-                  <Info size={20} />
-                  <span>
-                    접수 완료는 출입 또는 작업허가 승인이 아닙니다.
-                    <br />
-                    작업 전 안전교육과 담당자의 승인을 확인해 주세요.
-                  </span>
-                </div>
                 <button
                   className="button secondary w-full"
                   onClick={newRegistration}
