@@ -12,7 +12,6 @@ const basic = {
   endDate: '2026-10-16',
   company: '테스트업체',
   name: '시험작업자',
-  phone: '010-1234-5678',
   team: '안전팀',
   contact: '시험담당자',
   purpose: '점검',
@@ -21,11 +20,11 @@ const basic = {
   educationDate: '2099-01-01',
   educationCertificateContact: '',
 };
-test('기본정보와 연락처/날짜 검증', () => {
+test('연락처 없이 기본정보와 날짜 검증', () => {
   assert.ok(refinedBasic.safeParse(basic).success);
   assert.equal(refinedBasic.safeParse({ ...basic, endDate: '2026-10-14' }).success, false);
   assert.equal(refinedBasic.safeParse({ ...basic, startDate: '2026-02-30' }).success, false);
-  assert.equal(refinedBasic.safeParse({ ...basic, phone: 'abc' }).success, false);
+  assert.equal('phone' in refinedBasic.parse({ ...basic, phone: '010-1234-5678' }), false);
   assert.equal(refinedBasic.safeParse({ ...basic, purpose: '기타' }).success, false);
 });
 test('교육 이수일과 본인 확인 검증', () => {
@@ -36,8 +35,18 @@ test('교육 이수일과 본인 확인 검증', () => {
       .success,
     false,
   );
-  assert.equal(refinedBasic.safeParse({ ...basic, educationCertificateContact: '시험담당자' }).success, false);
-  assert.ok(refinedBasic.safeParse({ ...basic, educationCompleted: true, educationDate: '2026-01-01', educationCertificateContact: '시험담당자' }).success);
+  assert.equal(
+    refinedBasic.safeParse({ ...basic, educationCertificateContact: '시험담당자' }).success,
+    false,
+  );
+  assert.ok(
+    refinedBasic.safeParse({
+      ...basic,
+      educationCompleted: true,
+      educationDate: '2026-01-01',
+      educationCertificateContact: '시험담당자',
+    }).success,
+  );
 });
 test('빈 서명, 점만 찍기, 범위 밖 좌표 거부', () => {
   assert.equal(signatureSchema.safeParse([]).success, false);

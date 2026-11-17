@@ -5,7 +5,6 @@ export const emptyBasic: Basic = {
   endDate: '',
   company: '',
   name: '',
-  phone: '',
   team: '',
   contact: '',
   purpose: '공사·설치',
@@ -56,7 +55,7 @@ export function BasicFields({
           onChange={(e) => set('company', e.target.value)}
         />
       </label>
-      <label>
+      <label className="span-2">
         성명 <b>*</b>
         <input
           autoComplete="name"
@@ -65,29 +64,6 @@ export function BasicFields({
           placeholder="홍길동"
           value={value.name}
           onChange={(e) => set('name', e.target.value)}
-        />
-      </label>
-      <label>
-        연락처 <b>*</b>
-        <input
-          autoComplete="tel"
-          type="tel"
-          inputMode="tel"
-          required
-          maxLength={13}
-          placeholder="010-0000-0000"
-          value={value.phone}
-          onChange={(e) => {
-            const s = e.target.value.replace(/\D/g, '').slice(0, 11);
-            set(
-              'phone',
-              s.length > 7
-                ? s.slice(0, 3) + '-' + s.slice(3, 7) + '-' + s.slice(7)
-                : s.length > 3
-                  ? s.slice(0, 3) + '-' + s.slice(3)
-                  : s,
-            );
-          }}
         />
       </label>
       <div className="field-divider span-2">
@@ -148,18 +124,42 @@ export function BasicFields({
         <span>안전교육 이력</span>
       </div>
       <fieldset className="span-2">
-        <legend>안전교육 이수 여부 <b>*</b></legend>
+        <legend>
+          안전교육 이수 여부 <b>*</b>
+        </legend>
         <div className="education-options">
           <label className={!value.educationCompleted ? 'selected' : ''}>
-            <input type="radio" name="educationCompleted" checked={!value.educationCompleted}
+            <input
+              type="radio"
+              name="educationCompleted"
+              checked={!value.educationCompleted}
               disabled={educationReadOnly}
-              onChange={() => onChange({ ...value, educationCompleted: false, educationDate: '', educationCertificateContact: '' })} />
+              onChange={() =>
+                onChange({
+                  ...value,
+                  educationCompleted: false,
+                  educationDate: '',
+                  educationCertificateContact: '',
+                })
+              }
+            />
             미이수 (안전교육 1시간 이수 서약)
           </label>
           <label className={value.educationCompleted ? 'selected' : ''}>
-            <input type="radio" name="educationCompleted" checked={value.educationCompleted}
+            <input
+              type="radio"
+              name="educationCompleted"
+              checked={value.educationCompleted}
               disabled={educationReadOnly}
-              onChange={() => onChange({ ...value, educationCompleted: true, educationDate: '', educationCertificateContact: '' })} />
+              onChange={() =>
+                onChange({
+                  ...value,
+                  educationCompleted: true,
+                  educationDate: '',
+                  educationCertificateContact: '',
+                })
+              }
+            />
             이수 (교육이수증 제출)
           </label>
         </div>
@@ -177,10 +177,14 @@ export function BasicFields({
       {value.educationCompleted && (
         <label>
           이수증 제출 담당자 (만도브로제) <b>*</b>
-          <input required maxLength={100} disabled={educationReadOnly}
+          <input
+            required
+            maxLength={100}
+            disabled={educationReadOnly}
             placeholder="책임자 성명을 입력하세요"
             value={value.educationCertificateContact ?? ''}
-            onChange={(e) => set('educationCertificateContact', e.target.value)} />
+            onChange={(e) => set('educationCertificateContact', e.target.value)}
+          />
         </label>
       )}
     </div>

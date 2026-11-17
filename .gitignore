@@ -10,3 +10,4 @@ tmp/
 dev-server.*.log
 /.diagnostics-remote-*/
 /.deployment-safe/
+.vercel

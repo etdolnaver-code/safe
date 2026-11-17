@@ -10,6 +10,7 @@ import {
   passwordHash,
 } from './db';
 import {
+  Basic,
   Registration,
   Video,
   videoSchema,
@@ -39,13 +40,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 export async function videos(all = false): Promise<Video[]> {
   return (
-    await db()
+    (await db()
       .prepare(
         'SELECT * FROM videos WHERE deleted=0' +
           (all ? '' : ' AND visible=1') +
           ' ORDER BY sort_order,id',
       )
-      .all() as {
+      .all()) as {
       id: string;
       title: string;
       youtube_id: string;
@@ -62,16 +63,26 @@ export async function videos(all = false): Promise<Video[]> {
   }));
 }
 async function completedVideoIds(owner: string): Promise<string[]> {
-  return (await db().prepare(`SELECT DISTINCT v.id FROM videos v JOIN view_events e
+  return (
+    (await db()
+      .prepare(
+        `SELECT DISTINCT v.id FROM videos v JOIN view_events e
     ON e.video_id=v.id AND e.youtube_id=v.youtube_id
-    WHERE e.visitor_hash=? AND e.completed_at IS NOT NULL AND v.visible=1 AND v.deleted=0`)
-    .all(owner) as { id: string }[]).map((row) => row.id);
+    WHERE e.visitor_hash=? AND e.completed_at IS NOT NULL AND v.visible=1 AND v.deleted=0`,
+      )
+      .all(owner)) as { id: string }[]
+  ).map((row) => row.id);
 }
 async function openedVideoIds(owner: string): Promise<string[]> {
-  return (await db().prepare(`SELECT DISTINCT v.id FROM videos v JOIN view_events e
+  return (
+    (await db()
+      .prepare(
+        `SELECT DISTINCT v.id FROM videos v JOIN view_events e
     ON e.video_id=v.id AND e.youtube_id=v.youtube_id
-    WHERE e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
-    .all(owner) as { id: string }[]).map((row) => row.id);
+    WHERE e.visitor_hash=? AND v.visible=1 AND v.deleted=0`,
+      )
+      .all(owner)) as { id: string }[]
+  ).map((row) => row.id);
 }
 async function requireAllVideosOpened(owner: string) {
   const opened = new Set(await openedVideoIds(owner));
@@ -80,16 +91,26 @@ async function requireAllVideosOpened(owner: string) {
 }
 export async function registrations() {
   return (
-    await db().prepare('SELECT data FROM registrations ORDER BY created_at DESC').all() as {
+    (await db().prepare('SELECT data FROM registrations ORDER BY created_at DESC').all()) as {
       data: string;
     }[]
   ).map((r) => decrypt<Registration>(r.data));
 }
 export async function registration(id: string, lock = false) {
-  const row = await db().prepare('SELECT data FROM registrations WHERE id=?' + (lock ? ' FOR UPDATE' : '')).get(id) as
-    { data: string } | undefined;
+  const row = (await db()
+    .prepare('SELECT data FROM registrations WHERE id=?' + (lock ? ' FOR UPDATE' : ''))
+    .get(id)) as { data: string } | undefined;
   if (!row) fail(404, '등록정보가 없습니다.');
   return decrypt<Registration>(row.data);
+}
+// Legacy encrypted records retain phone values, but client-facing responses do not.
+function withoutPhone(basic: Basic): Basic {
+  const result = { ...basic };
+  delete (result as Basic & { phone?: string }).phone;
+  return result;
+}
+function publicRegistration(r: Registration): Registration {
+  return { ...r, basic: withoutPhone(r.basic), originalBasic: withoutPhone(r.originalBasic) };
 }
 async function filtered(req: NextRequest) {
   const p = req.nextUrl.searchParams;
@@ -109,7 +130,7 @@ async function filtered(req: NextRequest) {
       (!from || day >= from) &&
       (!to || day <= to) &&
       (!company || r.basic.company.toLowerCase().includes(company)) &&
-      (!q || [r.basic.name, r.basic.phone, r.receipt].some((s) => s.toLowerCase().includes(q)))
+      (!q || [r.basic.name, r.receipt].some((s) => s.toLowerCase().includes(q)))
     );
   });
 }
@@ -145,7 +166,7 @@ function listItem(r: Registration) {
     id: r.id,
     receipt: r.receipt,
     createdAt: r.createdAt,
-    basic: r.basic,
+    basic: withoutPhone(r.basic),
     educationAttested: r.educationAttested,
     educationVerified: r.educationVerified,
     version: r.version,
@@ -166,13 +187,20 @@ export async function get(req: NextRequest, path: string[]) {
   if (route === 'videos') return json({ videos: await videos() });
   if (route === 'video-progress') {
     const owner = await visitor();
-    return json({ videos: await videos(), openedVideoIds: await openedVideoIds(owner), completedVideoIds: await completedVideoIds(owner) });
+    return json({
+      videos: await videos(),
+      openedVideoIds: await openedVideoIds(owner),
+      completedVideoIds: await completedVideoIds(owner),
+    });
   }
   if (route === 'draft') {
     const owner = await visitor();
-    const hasSubmitted = !!await db().prepare('SELECT 1 FROM registrations WHERE visitor_hash=? LIMIT 1').get(owner);
-    const row = await db().prepare('SELECT data FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
-      .get(owner, Date.now()) as { data: string } | undefined;
+    const hasSubmitted = !!(await db()
+      .prepare('SELECT 1 FROM registrations WHERE visitor_hash=? LIMIT 1')
+      .get(owner));
+    const row = (await db()
+      .prepare('SELECT data FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
+      .get(owner, Date.now())) as { data: string } | undefined;
     if (!row) return json({ draft: null, hasSubmitted });
     const draft = draftSchema.parse(decrypt(row.data));
     if (draft.step > 1) {
@@ -205,11 +233,11 @@ export async function get(req: NextRequest, path: string[]) {
   if (path[0] === 'admin' && path[1] === 'registrations' && path.length === 3) {
     const r = await registration(path[2]);
     await audit(a.id, 'VIEW_REGISTRATION', r.id);
-    return json({ registration: r });
+    return json({ registration: publicRegistration(r) });
   }
   if (route === 'admin/videos') return json({ videos: await videos(true) });
   if (route === 'admin/audit') {
-    const rows = await db().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 150').all() as {
+    const rows = (await db().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 150').all()) as {
       details: string;
     }[];
     return json({ rows: rows.map((r) => ({ ...r, details: decrypt(r.details) })) });
@@ -226,7 +254,6 @@ export async function get(req: NextRequest, path: string[]) {
       '등록일',
       '회사명',
       '성명',
-      '연락처',
       '작업시작일',
       '작업종료일',
       '발주팀',
@@ -241,7 +268,6 @@ export async function get(req: NextRequest, path: string[]) {
       r.createdAt,
       r.basic.company,
       r.basic.name,
-      r.basic.phone,
       r.basic.startDate,
       r.basic.endDate,
       r.basic.team,
@@ -295,14 +321,20 @@ export async function mutate(req: NextRequest, path: string[]) {
     const next = randomBytes(32).toString('hex');
     const nextOwner = hash(next);
     await transaction(async () => {
-      await db().prepare('INSERT INTO visitors VALUES(?,?)').run(nextOwner, Date.now() + 2 * 60 * 60 * 1000);
+      await db()
+        .prepare('INSERT INTO visitors VALUES(?,?)')
+        .run(nextOwner, Date.now() + 2 * 60 * 60 * 1000);
       if (preserveDraft) {
-        const row = await db().prepare('SELECT data,expires_at FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?')
-          .get(owner, Date.now()) as { data: string; expires_at: number } | undefined;
+        const row = (await db()
+          .prepare(
+            'SELECT data,expires_at FROM visitor_drafts WHERE visitor_hash=? AND expires_at>?',
+          )
+          .get(owner, Date.now())) as { data: string; expires_at: number } | undefined;
         if (row) {
           const draft = draftSchema.parse(decrypt(row.data));
           draft.step = Math.min(draft.step, 1);
-          await db().prepare('INSERT INTO visitor_drafts VALUES(?,?,?)')
+          await db()
+            .prepare('INSERT INTO visitor_drafts VALUES(?,?,?)')
             .run(nextOwner, encrypt(draft), row.expires_at);
         }
       }
@@ -322,7 +354,10 @@ export async function mutate(req: NextRequest, path: string[]) {
       await limit('draft:' + owner, 300, 3600000);
       const draft = draftSchema.parse(input);
       if (draft.step > 1) await requireAllVideosOpened(owner);
-      await db().prepare('INSERT INTO visitor_drafts(visitor_hash,data,expires_at) VALUES(?,?,?) ON CONFLICT(visitor_hash) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at')
+      await db()
+        .prepare(
+          'INSERT INTO visitor_drafts(visitor_hash,data,expires_at) VALUES(?,?,?) ON CONFLICT(visitor_hash) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at',
+        )
         .run(owner, encrypt(draft), Date.now() + 30 * 60 * 1000);
       return json({ saved: true });
     }
@@ -331,7 +366,7 @@ export async function mutate(req: NextRequest, path: string[]) {
     await limit('login:' + clientKey(req), 10, 15 * 60 * 1000);
     await limit('login:global', 100, 15 * 60 * 1000);
     const { password } = z.object({ password: z.string().regex(/^\d{4,16}$/) }).parse(input);
-    const row = await db().prepare('SELECT * FROM admins WHERE id=?').get('admin') as {
+    const row = (await db().prepare('SELECT * FROM admins WHERE id=?').get('admin')) as {
       password: string;
       must_change: number;
     };
@@ -353,9 +388,9 @@ export async function mutate(req: NextRequest, path: string[]) {
       .update(JSON.stringify(v))
       .digest('hex');
     const result = await transaction(async () => {
-      const old = await db()
+      const old = (await db()
         .prepare('SELECT receipt,payload_hash,visitor_hash FROM registrations WHERE request_key=?')
-        .get(v.requestId) as
+        .get(v.requestId)) as
         { receipt: string; payload_hash: string; visitor_hash: string } | undefined;
       if (old) {
         if (old.visitor_hash !== owner || old.payload_hash !== payloadHash)
@@ -370,12 +405,22 @@ export async function mutate(req: NextRequest, path: string[]) {
         '-' +
         randomBytes(5).toString('hex').toUpperCase();
       const viewEvents = (
-        await db()
+        (await db()
           .prepare(
             'SELECT video_id,title,opened_at,completed_at FROM view_events WHERE visitor_hash=? ORDER BY opened_at',
           )
-          .all(owner) as { video_id: string; title: string; opened_at: string; completed_at: string | null }[]
-      ).map((e) => ({ videoId: e.video_id, title: e.title, openedAt: e.opened_at, completedAt: e.completed_at }));
+          .all(owner)) as {
+          video_id: string;
+          title: string;
+          opened_at: string;
+          completed_at: string | null;
+        }[]
+      ).map((e) => ({
+        videoId: e.video_id,
+        title: e.title,
+        openedAt: e.opened_at,
+        completedAt: e.completed_at,
+      }));
       const r: Registration = {
         id,
         receipt,
@@ -397,7 +442,9 @@ export async function mutate(req: NextRequest, path: string[]) {
         version: 1,
       };
       const inserted = await db()
-        .prepare('INSERT INTO registrations VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING')
+        .prepare(
+          'INSERT INTO registrations VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(request_key) DO NOTHING',
+        )
         .run(
           id,
           receipt,
@@ -410,7 +457,11 @@ export async function mutate(req: NextRequest, path: string[]) {
           encrypt(r),
         );
       if (!inserted.changes) {
-        const existing = await db().prepare('SELECT receipt,payload_hash,visitor_hash FROM registrations WHERE request_key=?').get(v.requestId) as
+        const existing = (await db()
+          .prepare(
+            'SELECT receipt,payload_hash,visitor_hash FROM registrations WHERE request_key=?',
+          )
+          .get(v.requestId)) as
           { receipt: string; payload_hash: string; visitor_hash: string } | undefined;
         if (!existing || existing.visitor_hash !== owner || existing.payload_hash !== payloadHash)
           fail(409, '이미 사용된 제출 요청입니다.');
@@ -429,7 +480,10 @@ export async function mutate(req: NextRequest, path: string[]) {
     const video = (await videos()).find((r) => r.id === v.videoId);
     if (!video) fail(404, '영상을 찾을 수 없습니다.');
     const eventId = randomUUID();
-    await db().prepare('INSERT INTO view_events(id,visitor_hash,video_id,title,opened_at,youtube_id) VALUES(?,?,?,?,?,?)')
+    await db()
+      .prepare(
+        'INSERT INTO view_events(id,visitor_hash,video_id,title,opened_at,youtube_id) VALUES(?,?,?,?,?,?)',
+      )
       .run(eventId, owner, video.id, video.title, new Date().toISOString(), video.youtubeId);
     return json({ eventId, status: 'OPENED_ONLY' });
   }
@@ -437,30 +491,46 @@ export async function mutate(req: NextRequest, path: string[]) {
     const owner = await visitor();
     await limit('video-start:' + owner, 100, 3600000);
     const { eventId } = z.object({ eventId: z.uuid() }).parse(input);
-    const event = await db().prepare(`SELECT e.id FROM view_events e JOIN videos v
+    const event = await db()
+      .prepare(
+        `SELECT e.id FROM view_events e JOIN videos v
       ON v.id=e.video_id AND v.youtube_id=e.youtube_id
-      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
+      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`,
+      )
       .get(eventId, owner);
     if (!event) fail(404, '영상 열람 기록을 찾을 수 없습니다.');
-    await db().prepare('UPDATE view_events SET started_at=? WHERE id=?')
+    await db()
+      .prepare('UPDATE view_events SET started_at=? WHERE id=?')
       .run(new Date().toISOString(), eventId);
     return json({ started: true });
   }
   if (route === 'video-events/complete' && req.method === 'POST') {
     const owner = await visitor();
     await limit('video-complete:' + owner, 100, 3600000);
-    const { eventId, durationSeconds } = z.object({
-      eventId: z.uuid(), durationSeconds: z.number().finite().min(1).max(14400),
-    }).parse(input);
-    const event = await db().prepare(`SELECT e.started_at,e.completed_at,v.id
+    const { eventId, durationSeconds } = z
+      .object({
+        eventId: z.uuid(),
+        durationSeconds: z.number().finite().min(1).max(14400),
+      })
+      .parse(input);
+    const event = (await db()
+      .prepare(
+        `SELECT e.started_at,e.completed_at,v.id
       FROM view_events e JOIN videos v ON v.id=e.video_id AND v.youtube_id=e.youtube_id
-      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`)
-      .get(eventId, owner) as { started_at: string | null; completed_at: string | null; id: string } | undefined;
+      WHERE e.id=? AND e.visitor_hash=? AND v.visible=1 AND v.deleted=0`,
+      )
+      .get(eventId, owner)) as
+      { started_at: string | null; completed_at: string | null; id: string } | undefined;
     if (!event) fail(404, '영상 열람 기록을 찾을 수 없습니다.');
-    if (!event.started_at || (!event.completed_at && Date.now() - Date.parse(event.started_at) < durationSeconds * 900))
+    if (
+      !event.started_at ||
+      (!event.completed_at && Date.now() - Date.parse(event.started_at) < durationSeconds * 900)
+    )
       fail(400, '영상 재생이 완료된 후 다시 시도해 주세요.');
-    if (!event.completed_at) await db().prepare('UPDATE view_events SET completed_at=? WHERE id=?')
-      .run(new Date().toISOString(), eventId);
+    if (!event.completed_at)
+      await db()
+        .prepare('UPDATE view_events SET completed_at=? WHERE id=?')
+        .run(new Date().toISOString(), eventId);
     return json({ completedVideoIds: await completedVideoIds(owner) });
   }
   if (route === 'admin/logout' && req.method === 'POST') {
@@ -477,9 +547,11 @@ export async function mutate(req: NextRequest, path: string[]) {
       .refine((v) => v.current !== v.next, '기존 비밀번호와 다르게 설정하세요.')
       .parse(input);
     await transaction(async () => {
-      const old = await db().prepare('SELECT password FROM admins WHERE id=? FOR UPDATE').get(a.id) as
-        { password: string } | undefined;
-      if (!old || !passwordMatches(v.current, old.password)) fail(400, '기존 비밀번호가 올바르지 않습니다.');
+      const old = (await db()
+        .prepare('SELECT password FROM admins WHERE id=? FOR UPDATE')
+        .get(a.id)) as { password: string } | undefined;
+      if (!old || !passwordMatches(v.current, old.password))
+        fail(400, '기존 비밀번호가 올바르지 않습니다.');
       await db()
         .prepare('UPDATE admins SET password=?,must_change=0 WHERE id=?')
         .run(passwordHash(v.next), a.id);
@@ -527,7 +599,7 @@ export async function mutate(req: NextRequest, path: string[]) {
             400,
             '본인이 확인한 교육정보는 수정할 수 없습니다. 별도의 관리자 확인 기능을 사용하세요.',
           );
-        r.basic = v.basic;
+        r.basic = { ...r.basic, ...v.basic };
         r.version++;
         await db()
           .prepare('UPDATE registrations SET start_date=?,end_date=?,data=? WHERE id=?')
@@ -558,7 +630,9 @@ export async function mutate(req: NextRequest, path: string[]) {
       r.verifiedAt = v.verified ? new Date().toISOString() : null;
       r.version++;
       await db().prepare('UPDATE registrations SET data=? WHERE id=?').run(encrypt(r), r.id);
-      await audit(a.id, v.verified ? 'VERIFY_EDUCATION' : 'REVOKE_EDUCATION', r.id, { note: v.note });
+      await audit(a.id, v.verified ? 'VERIFY_EDUCATION' : 'REVOKE_EDUCATION', r.id, {
+        note: v.note,
+      });
     });
     return json({ ok: true });
   }

@@ -281,7 +281,7 @@ function DashboardPanel() {
         <label>
           등록자 검색
           <input
-            placeholder="성명 / 연락처 / 접수번호"
+            placeholder="성명 / 접수번호"
             value={filters.q}
             onChange={(e) => setFilters({ ...filters, q: e.target.value })}
           />
@@ -368,7 +368,6 @@ function DashboardPanel() {
             <thead>
               <tr>
                 <th>성명 / 회사명</th>
-                <th>연락처</th>
                 <th>작업기간</th>
                 <th>방문 목적</th>
                 <th>교육 상태</th>
@@ -383,7 +382,6 @@ function DashboardPanel() {
                     {r.basic.name}
                     <div className="field-help">{r.basic.company}</div>
                   </td>
-                  <td>{r.basic.phone}</td>
                   <td>
                     {r.basic.startDate}
                     <br />
@@ -598,7 +596,8 @@ function Detail({
         {r.viewEvents.length ? (
           r.viewEvents.map((v, i) => (
             <p className="field-help" key={i}>
-              {v.title} · {formatDate(v.openedAt)} · {v.completedAt ? '영상 시청 완료' : '열람만 기록'}
+              {v.title} · {formatDate(v.openedAt)} ·{' '}
+              {v.completedAt ? '영상 시청 완료' : '열람만 기록'}
             </p>
           ))
         ) : (
@@ -625,7 +624,6 @@ function Detail({
             {Object.entries({
               회사명: r.originalBasic.company,
               성명: r.originalBasic.name,
-              연락처: r.originalBasic.phone,
               작업기간: r.originalBasic.startDate + ' ~ ' + r.originalBasic.endDate,
               담당자: r.originalBasic.team + ' / ' + r.originalBasic.contact,
               방문목적:

@@ -9,9 +9,9 @@ export const safetyRules = [
   '작업허가 승인 후 정해진 작업범위와 절차를 준수합니다.',
   '위험상황에서는 즉시 작업을 중지하고 MBCo. 담당자에게 보고합니다.',
 ];
-export const POLICY_VERSION = '2026-10-v1';
+export const POLICY_VERSION = '2026-11-v2';
 export const privacyText =
-  '수집·이용 목적: 신원 확인, 출입관리, 안전교육 이력 및 작업이력 관리, 비상연락. 수집 항목: 회사명, 성명, 연락처, 작업기간, 방문 목적, 작업발주 담당자, 교육 이력, 안전서약 기록 및 전자서명. 보유기간: 작업 종료일로부터 1년(운영 전 확정 필요). 동의를 거부할 권리가 있으며, 동의하지 않으면 본 시스템에서 출입등록을 제출할 수 없습니다.';
+  '수집·이용 목적: 신원 확인, 출입관리, 안전교육 이력 및 작업이력 관리. 수집 항목: 회사명, 성명, 작업기간, 방문 목적, 작업발주 담당자, 교육 이력, 안전서약 기록 및 전자서명. 보유기간: 작업 종료일로부터 1년(운영 전 확정 필요). 동의를 거부할 권리가 있으며, 동의하지 않으면 본 시스템에서 출입등록을 제출할 수 없습니다.';
 export const todayKST = () =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Seoul',
@@ -32,7 +32,6 @@ export const basicSchema = z.object({
   endDate: day,
   company: short,
   name: short,
-  phone: z.string().regex(/^010-\d{4}-\d{4}$/, '010-0000-0000 형식으로 입력하세요.'),
   team: short,
   contact: short,
   purpose: z.enum(purposes),
@@ -50,7 +49,9 @@ export const refinedBasic = basicSchema.superRefine((v, c) => {
     c.addIssue({
       code: 'custom',
       path: ['educationDate'],
-      message: v.educationCompleted ? '오늘까지의 교육일을 입력하세요.' : '교육 예정일을 입력하세요.',
+      message: v.educationCompleted
+        ? '오늘까지의 교육일을 입력하세요.'
+        : '교육 예정일을 입력하세요.',
     });
   if (v.educationCompleted && !v.educationCertificateContact)
     c.addIssue({
@@ -59,7 +60,11 @@ export const refinedBasic = basicSchema.superRefine((v, c) => {
       message: '이수증 제출 담당자 성명을 입력하세요.',
     });
   if (!v.educationCompleted && v.educationCertificateContact)
-    c.addIssue({ code: 'custom', path: ['educationCertificateContact'], message: '미이수 상태에서는 이수증 제출 담당자를 입력할 수 없습니다.' });
+    c.addIssue({
+      code: 'custom',
+      path: ['educationCertificateContact'],
+      message: '미이수 상태에서는 이수증 제출 담당자를 입력할 수 없습니다.',
+    });
 });
 export const draftSchema = z.object({
   basic: basicSchema.extend({
@@ -67,7 +72,6 @@ export const draftSchema = z.object({
     endDate: z.union([day, z.literal('')]),
     company: z.string().max(100),
     name: z.string().max(100),
-    phone: z.string().max(13).regex(/^[0-9-]*$/),
     team: z.string().max(100),
     contact: z.string().max(100),
   }),

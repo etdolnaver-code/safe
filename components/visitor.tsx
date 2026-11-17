@@ -52,12 +52,19 @@ export function Visitor() {
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const titleRef = useRef<HTMLHeadingElement>(null);
   const currentDraft = (nextStep = step): Draft => ({
-    basic, step: nextStep, pledge, attested, consent, requestId: request.current,
+    basic,
+    step: nextStep,
+    pledge,
+    attested,
+    consent,
+    requestId: request.current,
   });
   function saveDraft(draft: Draft) {
-    saveQueue.current = saveQueue.current.catch(() => {}).then(async () => {
-      await api('draft', send(draft, 'PUT'));
-    });
+    saveQueue.current = saveQueue.current
+      .catch(() => {})
+      .then(async () => {
+        await api('draft', send(draft, 'PUT'));
+      });
     return saveQueue.current;
   }
   async function refreshVideoProgress() {
@@ -71,7 +78,9 @@ export function Visitor() {
       .then(async (d) => {
         request.current = d.requestId;
         setToday(d.today);
-        let { draft, hasSubmitted } = await api<{ draft: Draft | null; hasSubmitted: boolean }>('draft');
+        let { draft, hasSubmitted } = await api<{ draft: Draft | null; hasSubmitted: boolean }>(
+          'draft',
+        );
         if (hasSubmitted) {
           await api('visitor/reset', send({ preserveDraft: !!draft }));
           if (draft) ({ draft } = await api<{ draft: Draft | null }>('draft'));
@@ -91,7 +100,11 @@ export function Visitor() {
   }, []);
   useEffect(() => {
     if (!ready || step !== 1) return;
-    const refresh = () => { void refreshVideoProgress().catch(() => setError('영상 시청 기록을 불러오지 못했습니다. 다시 시도해 주세요.')); };
+    const refresh = () => {
+      void refreshVideoProgress().catch(() =>
+        setError('영상 시청 기록을 불러오지 못했습니다. 다시 시도해 주세요.'),
+      );
+    };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
     return () => {
@@ -312,7 +325,12 @@ export function Visitor() {
                       <div>
                         <small>SAFETY TRAINING {String(i + 1).padStart(2, '0')}</small>
                         <strong>{v.title}</strong>
-                        <span className={'video-status ' + (openedVideoIds.includes(v.id) ? 'opened' : 'unopened')}>
+                        <span
+                          className={
+                            'video-status ' +
+                            (openedVideoIds.includes(v.id) ? 'opened' : 'unopened')
+                          }
+                        >
                           {openedVideoIds.includes(v.id) ? '열어봄 ✓' : '미확인'}
                         </span>
                       </div>
@@ -322,7 +340,8 @@ export function Visitor() {
                 )}
                 {!allVideosOpened && (
                   <p className="notice warning" role="status">
-                    <Info size={18} /> 모든 안전교육 영상 페이지를 열어본 후 이수 서약에 체크할 수 있습니다.
+                    <Info size={18} /> 모든 안전교육 영상 페이지를 열어본 후 이수 서약에 체크할 수
+                    있습니다.
                   </p>
                 )}
                 {videos.length > 0 && (
@@ -384,11 +403,11 @@ export function Visitor() {
                   <h3>개인정보 수집·이용 안내</h3>
                   <dl>
                     <dt>수집·이용 목적</dt>
-                    <dd>신원 확인, 출입관리, 안전교육 이력 및 작업이력 관리, 비상연락</dd>
+                    <dd>신원 확인, 출입관리, 안전교육 이력 및 작업이력 관리</dd>
                     <dt>수집 항목</dt>
                     <dd>
-                      회사명, 성명, 연락처, 작업기간, 방문 목적, 작업발주 담당자, 교육 이력,
-                      안전서약 기록 및 전자서명
+                      회사명, 성명, 작업기간, 방문 목적, 작업발주 담당자, 교육 이력, 안전서약 기록
+                      및 전자서명
                     </dd>
                     <dt>보유기간</dt>
                     <dd>
@@ -442,8 +461,6 @@ export function Visitor() {
                   <dd>
                     {basic.company} · {basic.name}
                   </dd>
-                  <dt>연락처</dt>
-                  <dd>{basic.phone}</dd>
                   <dt>작업기간</dt>
                   <dd>
                     {basic.startDate} ~ {basic.endDate}
@@ -538,7 +555,13 @@ export function Visitor() {
                 )}
                 <button
                   className="button primary"
-                  disabled={!ready || busy || (step === 1 && (!allVideosOpened || (videos.length > 0 && !videoWatchConfirmed))) || (step === 2 && consent !== true)}
+                  disabled={
+                    !ready ||
+                    busy ||
+                    (step === 1 &&
+                      (!allVideosOpened || (videos.length > 0 && !videoWatchConfirmed))) ||
+                    (step === 2 && consent !== true)
+                  }
                   onClick={step === 3 ? submit : next}
                 >
                   {busy ? '접수 중…' : step === 3 ? '서약 및 등록 제출' : '다음 단계'}

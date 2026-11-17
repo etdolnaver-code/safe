@@ -36,7 +36,7 @@ npm run dev
 ## 구현된 기능
 
 - 기본정보 → 안전교육/서약 → 개인정보 동의 → 전자서명 → 완료
-- 날짜, 연락처, 기타 사유, 교육일, 동의/서약, 서명을 서버에서 검증
+- 날짜, 기타 사유, 교육일, 동의/서약, 서명을 서버에서 검증. 작업자 연락처는 수집하지 않음
 - Canvas 직접 서명/초기화, 관리자 전용 서명 조회
 - 등록된 모든 영상 페이지의 열람 기록을 확인한 후 방문자가 1시간 이수 서약에 직접 체크해야 개인정보 동의 단계로 이동. 페이지 열람·재생 종료 / 본인 이수 확인 / 관리자 근거 확인은 분리하며 자동 이수 판정 없음
 - 미이수 상태를 그대로 접수하며 작업 전 교육과 담당자 확인 필요 안내
@@ -78,18 +78,18 @@ npm audit
 
 ## 환경변수
 
-| 변수                   | 설명                                                             |
-| ---------------------- | ---------------------------------------------------------------- |
-| APP_ORIGIN             | 변경 API에서 정확하게 허용할 Origin. 기본 http://localhost:3000  |
-| DATABASE_URL           | Supabase Transaction Pooler PostgreSQL URI. Vercel 서버 전용 비밀값 |
+| 변수                   | 설명                                                                                  |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| APP_ORIGIN             | 변경 API에서 정확하게 허용할 Origin. 기본 http://localhost:3000                       |
+| DATABASE_URL           | Supabase Transaction Pooler PostgreSQL URI. Vercel 서버 전용 비밀값                   |
 | DATABASE_SSL_CA_BASE64 | Supabase Database Settings에서 받은 CA 인증서의 Base64. 서버의 TLS 인증서 검증에 사용 |
-| DATABASE_PATH          | 로컬 개발·이전용 SQLite 파일 경로. Vercel에서 사용하지 않음 |
-| LOCAL_SQLITE_DEV       | 로컬 개발에서만 SQLite 사용을 명시적으로 허용 |
-| DB_MIGRATION_TARGET    | 이전 대상 확인값. DATABASE_URL의 `host[:port]/database`와 일치해야 함 |
-| DATA_ENCRYPTION_KEY    | 32바이트 hex. 클라이언트 노출 금지. 누락 시 DB 기능 실패         |
-| INITIAL_ADMIN_PASSWORD | 새 DB에서만 최초 관리자 생성 시 사용. 운영은 강한 숫자 PIN 필요 |
-| COOKIE_SECURE          | HTTPS 운영은 true 필수, 로컬 HTTP는 false                        |
-| TRUST_PROXY            | 기본 false. 신뢰 프록시가 X-Forwarded-For를 덮어쓰는 경우만 true |
+| DATABASE_PATH          | 로컬 개발·이전용 SQLite 파일 경로. Vercel에서 사용하지 않음                           |
+| LOCAL_SQLITE_DEV       | 로컬 개발에서만 SQLite 사용을 명시적으로 허용                                         |
+| DB_MIGRATION_TARGET    | 이전 대상 확인값. DATABASE_URL의 `host[:port]/database`와 일치해야 함                 |
+| DATA_ENCRYPTION_KEY    | 32바이트 hex. 클라이언트 노출 금지. 누락 시 DB 기능 실패                              |
+| INITIAL_ADMIN_PASSWORD | 새 DB에서만 최초 관리자 생성 시 사용. 운영은 강한 숫자 PIN 필요                       |
+| COOKIE_SECURE          | HTTPS 운영은 true 필수, 로컬 HTTP는 false                                             |
+| TRUST_PROXY            | 기본 false. 신뢰 프록시가 X-Forwarded-For를 덮어쓰는 경우만 true                      |
 
 로그인은 식별키당 15분에 10회, 전체 15분에 100회 제한입니다. TRUST_PROXY=false이면 공유 제한을 사용합니다. 운영은 프록시 IP 정책과 WAF/요청 제한을 설정하세요. 비밀번호 변경은 15분에 5회 제한입니다.
 
@@ -101,16 +101,16 @@ npm audit
 
 운영 PostgreSQL 스키마: `scripts/schema.sql`. 로컬 SQLite 스키마: `lib/db.ts`.
 
-| 테이블        | 용도                                                        |
-| ------------- | ----------------------------------------------------------- |
-| admins        | 비밀번호 해시, ADMIN 역할, 초기 변경 상태                   |
-| sessions      | 세션 토큰 해시, 만료/유휴 시각                              |
-| visitors      | 익명 토큰 해시, 2시간 만료                                  |
-| registrations | ID/접수번호/요청키/요청 HMAC/날짜/암호화된 현재 정보와 원본 |
-| videos        | 제목, YouTube ID, 노출 순서/상태, 소프트 삭제               |
+| 테이블        | 용도                                                           |
+| ------------- | -------------------------------------------------------------- |
+| admins        | 비밀번호 해시, ADMIN 역할, 초기 변경 상태                      |
+| sessions      | 세션 토큰 해시, 만료/유휴 시각                                 |
+| visitors      | 익명 토큰 해시, 2시간 만료                                     |
+| registrations | ID/접수번호/요청키/요청 HMAC/날짜/암호화된 현재 정보와 원본    |
+| videos        | 제목, YouTube ID, 노출 순서/상태, 소프트 삭제                  |
 | view_events   | 익명 영상 페이지 열람·재생 시작·재생 종료 시각. 이수 판정 없음 |
-| rate_limits   | DB 요청 제한                                                |
-| audit         | 작업, 수행자, 대상, 시각, 암호화된 상세 사유                |
+| rate_limits   | DB 요청 제한                                                   |
+| audit         | 작업, 수행자, 대상, 시각, 암호화된 상세 사유                   |
 
 운영은 PostgreSQL 트랜잭션과 요청키 고유 제약을 사용합니다. 작업일/집계는 한국 시간, 시각은 UTC 저장입니다. 회사명/성명 검색은 서버 메모리에서 복호화 후 필터링하므로 대규모 운영은 DB 검색 구조 확장이 필요합니다. 현재 단일 ADMIN 계정입니다. 관리자의 개인별 책임 추적은 개별 계정/SSO 확장이 필요합니다.
 

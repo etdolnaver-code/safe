@@ -6,11 +6,15 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import ExcelJS from 'exceljs';
+import { decrypt, encrypt } from '../lib/db.ts';
 test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 }, async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'mbco-test-'));
   const path = join(directory, 'test.sqlite');
   const port = 3107;
   const base = 'http://127.0.0.1:' + port;
+  const testKey = randomBytes(32).toString('hex');
+  process.env.DATA_ENCRYPTION_KEY = testKey;
   let logs = '';
   const child = spawn(
     process.execPath,
@@ -23,7 +27,7 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
         LOCAL_SQLITE_TEST: 'true',
         APP_ORIGIN: base,
         DATABASE_PATH: path,
-        DATA_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+        DATA_ENCRYPTION_KEY: testKey,
         INITIAL_ADMIN_PASSWORD: '1111',
         COOKIE_SECURE: 'false',
         TRUST_PROXY: 'false',
@@ -114,7 +118,6 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     endDate: '2026-10-16',
     company: '=2+2',
     name: '시험작업자',
-    phone: '010-1234-5678',
     team: '안전팀',
     contact: '시험담당자',
     purpose: '점검',
@@ -159,6 +162,7 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     assert.equal(d.total, 1);
     id = d.rows[0].id;
     assert.equal(d.rows[0].educationVerified, false);
+    assert.equal('phone' in d.rows[0].basic, false);
     assert.equal(
       (await call('registrations', { ...payload, basic: { ...basic, name: '변경' } })).status,
       409,
@@ -180,7 +184,29 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     const d = await (await call('admin/registrations/' + id, undefined, { admin: true })).json();
     assert.equal(d.registration.receipt, receipt);
     assert.equal(d.registration.basic.name, '시험작업자');
+    assert.equal('phone' in d.registration.basic, false);
+    assert.equal('phone' in d.registration.originalBasic, false);
     assert.equal(d.registration.signature.length, 1);
+  });
+  await t.test('기존 연락처는 저장본에 유지하고 API에서는 숨김', async () => {
+    const detail = await (
+      await call('admin/registrations/' + id, undefined, { admin: true })
+    ).json();
+    const legacy = {
+      ...detail.registration,
+      basic: { ...detail.registration.basic, phone: '010-1234-5678' },
+      originalBasic: { ...detail.registration.originalBasic, phone: '010-1234-5678' },
+    };
+    const store = new DatabaseSync(path);
+    store.prepare('UPDATE registrations SET data=? WHERE id=?').run(encrypt(legacy), id);
+    store.close();
+    const list = await (await call('admin/dashboard', undefined, { admin: true })).json();
+    assert.equal('phone' in list.rows[0].basic, false);
+    const response = await (
+      await call('admin/registrations/' + id, undefined, { admin: true })
+    ).json();
+    assert.equal('phone' in response.registration.basic, false);
+    assert.equal('phone' in response.registration.originalBasic, false);
   });
   await t.test('필터와 CSV 수식 방어 및 실제 XLSX 내보내기', async () => {
     const d = await (
@@ -189,11 +215,21 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     assert.equal(d.total, 0);
     const csv = await call('admin/export?format=csv', undefined, { admin: true });
     assert.equal(csv.status, 200);
-    assert.ok((await csv.text()).includes("'=2+2"));
+    const csvText = await csv.text();
+    assert.ok(csvText.includes("'=2+2"));
+    assert.equal(csvText.includes('연락처'), false);
+    assert.equal(csvText.includes('010-1234-5678'), false);
     const excel = await call('admin/export?format=xlsx', undefined, { admin: true });
     assert.equal(excel.status, 200);
     const bytes = new Uint8Array(await excel.arrayBuffer());
     assert.deepEqual([...bytes.slice(0, 2)], [80, 75]);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(
+      Buffer.from(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0],
+    );
+    const sheet = workbook.getWorksheet('출입등록')!;
+    assert.equal(sheet.getRow(1).values?.toString().includes('연락처'), false);
+    assert.equal(sheet.getRow(2).values?.toString().includes('010-1234-5678'), false);
   });
   await t.test('수정 사유, 낙관적 잠금, 교육 확인과 원본 보존', async () => {
     assert.equal(
@@ -241,6 +277,12 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     assert.equal(d.registration.educationAttested, false);
     assert.equal(d.registration.originalBasic.company, '=2+2');
     assert.equal(d.registration.basic.company, '변경업체');
+    const store = new DatabaseSync(path);
+    const saved = store.prepare('SELECT data FROM registrations WHERE id=?').get(id) as {
+      data: string;
+    };
+    assert.equal(decrypt<{ basic: { phone?: string } }>(saved.data).basic.phone, '010-1234-5678');
+    store.close();
   });
   await t.test('영상 노출/열람 기록은 교육 이수와 분리', async () => {
     const store = new DatabaseSync(path);
@@ -259,38 +301,68 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     const initialProgress = await before.json();
     assert.deepEqual(initialProgress.openedVideoIds, []);
     assert.deepEqual(initialProgress.completedVideoIds, []);
-    const gatedDraft = { basic, step: 2, pledge: true, attested: false, consent: null, requestId: randomUUID() };
+    const gatedDraft = {
+      basic,
+      step: 2,
+      pledge: true,
+      attested: false,
+      consent: null,
+      requestId: randomUUID(),
+    };
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
-    assert.equal((await call('registrations', { ...payload, requestId: randomUUID() })).status, 400);
+    assert.equal(
+      (await call('registrations', { ...payload, requestId: randomUUID() })).status,
+      400,
+    );
     const opened = await call('video-events', { videoId });
     assert.equal(opened.status, 200);
     const { eventId } = await opened.json();
     const firstProgress = await (await call('video-progress')).json();
     assert.deepEqual(firstProgress.openedVideoIds, [videoId]);
     assert.deepEqual(firstProgress.completedVideoIds, []);
-    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 400);
+    assert.equal(
+      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
+      400,
+    );
     assert.equal((await call('video-events/start', { eventId })).status, 200);
-    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 400);
+    assert.equal(
+      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
+      400,
+    );
     assert.deepEqual((await (await call('video-progress')).json()).completedVideoIds, []);
     const elapsedStore = new DatabaseSync(path);
-    elapsedStore.prepare('UPDATE view_events SET started_at=? WHERE id=?')
+    elapsedStore
+      .prepare('UPDATE view_events SET started_at=? WHERE id=?')
       .run(new Date(Date.now() - 61000).toISOString(), eventId);
     elapsedStore.close();
-    assert.equal((await call('video-events/complete', { eventId, durationSeconds: 60 })).status, 200);
+    assert.equal(
+      (await call('video-events/complete', { eventId, durationSeconds: 60 })).status,
+      200,
+    );
     assert.deepEqual((await (await call('video-progress')).json()).completedVideoIds, [videoId]);
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
     const secondOpened = await call('video-events', { videoId: secondVideoId });
     const { eventId: secondEventId } = await secondOpened.json();
-    assert.deepEqual(new Set((await (await call('video-progress')).json()).openedVideoIds), new Set([videoId, secondVideoId]));
+    assert.deepEqual(
+      new Set((await (await call('video-progress')).json()).openedVideoIds),
+      new Set([videoId, secondVideoId]),
+    );
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 200);
     assert.equal((await (await call('draft')).json()).draft.step, 2);
     assert.equal((await call('video-events/start', { eventId: secondEventId })).status, 200);
     const secondStore = new DatabaseSync(path);
-    secondStore.prepare('UPDATE view_events SET started_at=? WHERE id=?')
+    secondStore
+      .prepare('UPDATE view_events SET started_at=? WHERE id=?')
       .run(new Date(Date.now() - 61000).toISOString(), secondEventId);
     secondStore.close();
-    assert.equal((await call('video-events/complete', { eventId: secondEventId, durationSeconds: 60 })).status, 200);
-    assert.deepEqual(new Set((await (await call('video-progress')).json()).completedVideoIds), new Set([videoId, secondVideoId]));
+    assert.equal(
+      (await call('video-events/complete', { eventId: secondEventId, durationSeconds: 60 })).status,
+      200,
+    );
+    assert.deepEqual(
+      new Set((await (await call('video-progress')).json()).completedVideoIds),
+      new Set([videoId, secondVideoId]),
+    );
     const previousCookie = visitorCookie;
     const reset = await call('visitor/reset', { preserveDraft: true });
     assert.equal(reset.status, 200);
@@ -303,7 +375,10 @@ test('실제 HTTP·SQLite 인증 및 등록 통합 검증', { timeout: 180000 },
     assert.equal((await (await call('draft')).json()).draft.step, 1);
     assert.equal((await call('draft', gatedDraft, { method: 'PUT' })).status, 400);
     const retained = new DatabaseSync(path);
-    assert.equal((retained.prepare('SELECT COUNT(*) AS n FROM view_events').get() as { n: number }).n >= 2, true);
+    assert.equal(
+      (retained.prepare('SELECT COUNT(*) AS n FROM view_events').get() as { n: number }).n >= 2,
+      true,
+    );
     retained.close();
     const cancelReset = await call('visitor/reset', {});
     assert.equal(cancelReset.status, 200);
